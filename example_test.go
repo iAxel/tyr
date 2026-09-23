@@ -4,9 +4,33 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"os"
 
 	"github.com/iaxel/tyr"
 )
+
+func ExampleNewLogHandler() {
+	// An application would pass the logger to slog.SetDefault. This one also
+	// drops the time from records to keep the output stable.
+	noTime := &slog.HandlerOptions{ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+		if len(groups) == 0 && a.Key == slog.TimeKey {
+			return slog.Attr{}
+		}
+		return a
+	}}
+	logger := slog.New(tyr.NewLogHandler(slog.NewJSONHandler(os.Stdout, noTime)))
+
+	get := tyr.New().Handle("links.get", func(ctx context.Context, req struct{}) (string, error) {
+		logger.InfoContext(ctx, "link found", "code", "go")
+		logger.WithGroup("db").InfoContext(ctx, "query", "rows", 1)
+		return "https://go.dev", nil
+	})
+	_, _ = get.Call(tyr.RequestIDKey.Set(context.Background(), "0192f5e2"), nil)
+	// Output:
+	// {"level":"INFO","msg":"link found","request_id":"0192f5e2","operation":"links.get","code":"go"}
+	// {"level":"INFO","msg":"query","request_id":"0192f5e2","operation":"links.get","db":{"rows":1}}
+}
 
 func ExampleOperation_Call() {
 	type GetLinkReq struct {
