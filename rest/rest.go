@@ -31,6 +31,12 @@
 // JSON name of the field, and its detail names the source, e.g. query
 // parameter "tag": must be an integer.
 //
+// A missing query parameter or header leaves the field as the body set it,
+// so a client can set any bound field in JSON, as it can over JSON-RPC.
+// Bind only what the client says: what the server trusts, such as the
+// tenant or the user, comes through the context, from middleware or an
+// interceptor.
+//
 // # Responses
 //
 // A result is sent as JSON with status 200 or the one set by [Status]. A
