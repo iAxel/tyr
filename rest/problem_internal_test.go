@@ -1,20 +1,17 @@
 package rest
 
 import (
-	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
-
-	"github.com/iaxel/tyr"
 )
 
 func TestWriteErrorOfOtherType(t *testing.T) {
-	// Operation.Call returns only *tyr.Error, but another error would still
-	// be sent, as an internal one.
+	// Operation.Call returns only *tyr.Error; another error would reach
+	// writeError as nil and still be sent, as an internal one.
 	rec := httptest.NewRecorder()
-	h := &handler{api: tyr.New()}
-	h.writeError(t.Context(), rec, errors.New("odd"))
+	writeError(t.Context(), slog.New(slog.DiscardHandler), rec, nil, nil)
 
 	want := `{"type":"about:blank","title":"Internal Server Error","status":500,"detail":"internal error","kind":"internal"}`
 	if rec.Code != http.StatusInternalServerError || rec.Body.String() != want {

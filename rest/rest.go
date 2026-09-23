@@ -20,18 +20,35 @@
 //	}
 //
 // Such fields may be strings, bools, integers and floats, or implement
-// encoding.TextUnmarshaler, like time.Time does in RFC 3339, or be pointers
-// to those, which get a value only when there is one; query fields may also
-// be slices of those. A value that doesn't fit fails the call
-// with [tyr.KindInvalidArgument] and a [tyr.Violation]: its pointer is the
-// JSON name of the field, and its detail names the source, e.g.
-// query parameter "tag": must be an integer.
+// encoding.TextUnmarshaler, or be pointers to those, which get a value only
+// when there is one; query fields may also be slices of those. A time.Time
+// is an RFC 3339 time in the path and the query, and in a header an HTTP
+// date, as RFC 9110 has them, or else an RFC 3339 time, for headers of
+// one's own. A value that doesn't fit fails the call with
+// [tyr.KindInvalidArgument] and a [tyr.Violation]: its pointer is the JSON
+// name of the field, and its detail names the source, e.g. query parameter
+// "tag": must be an integer.
 //
 // # Responses
 //
 // A result is sent as JSON with status 200 or the one set by [Status]. A
-// result of an empty struct type has no body, and its status is 204 by
-// default.
+// field of the result tagged header sets that header of the response, of
+// the same types as bound fields; a time.Time is an HTTP date. A nil
+// pointer, an empty string and a zero time set none. The field stays in the
+// JSON, which JSON-RPC sends too, unless it has json:"-":
+//
+//	type FollowRes struct {
+//		URL string `json:"url" header:"Location"`
+//	}
+//	api.Handle("links.follow", Follow, rest.Route("GET /{code}"), rest.Status(http.StatusFound))
+//
+// A redirect, 301, 302, 303, 307 or 308, needs such a Location field and
+// has no body. A result without JSON members, such as struct{}, has no body
+// either, and its status is 204 by default.
+//
+// A type may be both a request and a result. Its path and query tags mean
+// nothing in a result, but its header tags work both ways: a field is bound
+// from the header of the request and sets the header of the response.
 //
 // An error is sent as application/problem+json (RFC 9457) with the status
 // of its kind:
@@ -48,18 +65,26 @@
 //
 // The problem's detail is the error's message and its kind is the kind's
 // name. [tyr.Violations] go in its errors member, other details in its
-// details member; internal errors have neither. 413 and 415 have no kind:
+// details member; internal errors have neither. A 401 carries the
+// WWW-Authenticate challenges of [Challenge]. 413 and 415 have no kind:
 // they are about the HTTP request, and the operation isn't called.
 //
-// A result or details that can't be encoded are a bug of the server: they
-// are logged with [tyr.API.Logger], with the request's context, which also
-// carries the operation (see [tyr.WithOperation]), and the client gets an
-// internal error or the problem without its details.
+// A result or details that can't be encoded, or a redirect without a
+// Location, are a bug of the server: they are logged with
+// [tyr.API.Logger], with the request's context, which also carries the
+// operation (see [tyr.WithOperation]), and the client gets an internal
+// error or the problem without its details.
+//
+// Outside operations, [WriteError] writes an error as an operation's, and
+// [WriteProblem] a problem of the HTTP request, such as the 403 of
+// [http.CrossOriginProtection]. [ProblemHandler] makes the 404 and 405 of
+// the mux problems too, so that the API speaks one format of errors.
 package rest
 
 import (
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/iaxel/tyr"
 )
@@ -90,13 +115,27 @@ func RouteOf(op *tyr.Operation) (pattern string, ok bool) {
 }
 
 // Status sets the status of a successful response, which is 200 by default
-// and 204 for a result of an empty struct type. Status panics if code isn't
-// a 2xx status, and [Mount] panics on 204 or 205 for a result with a body.
+// and 204 for a result without JSON members, such as struct{}. It may be a
+// 2xx status or a redirect, 301, 302, 303, 307 or 308, which has no body
+// and needs a field with header:"Location" in the result. Status panics on
+// other codes, and [Mount] panics on a redirect without such a field or on
+// 204 or 205 for a result with JSON members.
 func Status(code int) tyr.OpOption {
-	if code < 200 || code > 299 {
-		panic(fmt.Sprintf("rest: Status(%d): want a 2xx status", code))
+	if (code < 200 || code > 299) && !isRedirect(code) {
+		panic(fmt.Sprintf("rest: Status(%d): want a 2xx status or a redirect: 301, 302, 303, 307 or 308", code))
 	}
 	return statusKey.Option(code)
+}
+
+// isRedirect reports whether code is a status that Status allows for
+// redirects.
+func isRedirect(code int) bool {
+	switch code {
+	case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther,
+		http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
+		return true
+	}
+	return false
 }
 
 // MaxBodyBytes limits the size of request bodies to n bytes, 1 MiB by
@@ -110,17 +149,46 @@ func MaxBodyBytes(n int64) tyr.OpOption {
 	return limitKey.Option(n)
 }
 
+// MountOption configures [Mount].
+type MountOption func(*mount)
+
+// mount is the configuration of Mount.
+type mount struct {
+	challenges []string // of WWW-Authenticate
+}
+
+// Challenge makes the 401 Unauthorized responses of the operations that
+// [Mount] serves carry the challenge in a WWW-Authenticate header, as RFC
+// 9110 requires, e.g. `Bearer realm="shortlink"`; each Challenge adds one.
+// Challenge panics if the challenge is empty or has a line break.
+func Challenge(challenge string) MountOption {
+	if challenge == "" || strings.ContainsAny(challenge, "\r\n") {
+		panic(fmt.Sprintf("rest: Challenge(%q): want a challenge without line breaks", challenge))
+	}
+	return func(m *mount) {
+		m.challenges = append(m.challenges, challenge)
+	}
+}
+
 // Mount seals api and registers a handler on mux for every operation that
 // has a [Route]; operations without one are left out.
 //
 // Mount panics if a pattern has no method, ServeMux rejects a pattern or
 // finds that it conflicts with another, a wildcard has no path field or a
-// path field has no wildcard, a bound field can't be bound, or [Status]
-// sets 204 or 205 for a result with a body. It also panics if mux or api
-// is nil.
-func Mount(mux *http.ServeMux, api *tyr.API) {
+// path field has no wildcard, a bound field can't be bound, a field of a
+// result can't set its header, or [Status] sets a redirect for a result
+// without a Location field or 204 or 205 for a result with JSON members.
+// It also panics if mux, api or an option is nil.
+func Mount(mux *http.ServeMux, api *tyr.API, opts ...MountOption) {
 	if mux == nil || api == nil {
 		panic("rest: Mount: nil mux or API")
+	}
+	var m mount
+	for _, opt := range opts {
+		if opt == nil {
+			panic("rest: Mount: nil option")
+		}
+		opt(&m)
 	}
 	api.Seal()
 	for op := range api.Operations() {
@@ -128,6 +196,6 @@ func Mount(mux *http.ServeMux, api *tyr.API) {
 		if !ok {
 			continue
 		}
-		handle(mux, op, pattern, newHandler(api, op, pattern))
+		handle(mux, op, pattern, newHandler(api, op, pattern, &m))
 	}
 }

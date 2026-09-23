@@ -6,6 +6,7 @@ import (
 	"encoding"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/textproto"
 	"reflect"
 	"slices"
@@ -74,7 +75,10 @@ type Problem struct {
 // header it gets its value from. The field must be of type string, bool, an
 // integer or a float type, or implement encoding.TextUnmarshaler, like
 // time.Time does, or be a pointer to one of those, which gets a value only
-// when there is one; query fields may also be slices of those types.
+// when there is one; query fields may also be slices of those types. A
+// time.Time is an RFC 3339 time in the path and the query, and in a header
+// an HTTP date, as RFC 9110 has them, or else an RFC 3339 time, for headers
+// of one's own.
 //
 // A bound field must be a member of t's JSON object, as encoding/json/v2
 // sees it, so that a client can set it in JSON too: a field of t or of a
@@ -131,10 +135,10 @@ func NewBinding(t reflect.Type) (*Binding, error) {
 		}
 		seen[src][name] = tf.name
 
-		set := setter(f.Type, src == Query)
+		set := setter(f.Type, src)
 		if set == nil {
 			msg := fmt.Sprintf("field %s has %s, but its type %v can't be bound", tf.name, tag, f.Type)
-			if f.Type.Kind() == reflect.Slice && setter(f.Type, true) != nil {
+			if f.Type.Kind() == reflect.Slice && setter(f.Type, Query) != nil {
 				msg += ": slices can be bound only from the query"
 			}
 			return nil, errors.New(msg)
@@ -254,16 +258,16 @@ func Describe(t reflect.Type) string {
 	return "has an invalid value"
 }
 
-// setter returns the function that sets a field of type t from its values,
-// or nil if t can't be bound. Slices are allowed if slices is set.
-func setter(t reflect.Type, slices bool) func(v reflect.Value, values []string) string {
-	if parse := scalar(t); parse != nil {
+// setter returns the function that sets a field of type t from its values
+// in src, or nil if t can't be bound from src. Only the query has slices.
+func setter(t reflect.Type, src Source) func(v reflect.Value, values []string) string {
+	if parse := scalar(t, src); parse != nil {
 		return func(v reflect.Value, values []string) string {
 			return parse(v, values[0])
 		}
 	}
 	if t.Kind() == reflect.Pointer {
-		if parse := scalar(t.Elem()); parse != nil {
+		if parse := scalar(t.Elem(), src); parse != nil {
 			return func(v reflect.Value, values []string) string {
 				p := reflect.New(t.Elem())
 				if detail := parse(p.Elem(), values[0]); detail != "" {
@@ -274,10 +278,10 @@ func setter(t reflect.Type, slices bool) func(v reflect.Value, values []string) 
 			}
 		}
 	}
-	if !slices || t.Kind() != reflect.Slice {
+	if src != Query || t.Kind() != reflect.Slice {
 		return nil
 	}
-	parse := scalar(t.Elem())
+	parse := scalar(t.Elem(), src)
 	if parse == nil {
 		return nil
 	}
@@ -293,10 +297,22 @@ func setter(t reflect.Type, slices bool) func(v reflect.Value, values []string) 
 	}
 }
 
-// scalar returns the function that parses a string into a value of type t
-// and returns what's wrong with it, if anything, or nil if t can't be
+// scalar returns the function that parses a string from src into a value of
+// type t and returns what's wrong with it, if anything, or nil if t can't be
 // bound.
-func scalar(t reflect.Type) func(v reflect.Value, s string) string {
+func scalar(t reflect.Type, src Source) func(v reflect.Value, s string) string {
+	if t == reflect.TypeFor[time.Time]() && src == Header {
+		return func(v reflect.Value, s string) string {
+			tm, err := http.ParseTime(s)
+			if err == nil {
+				tm = tm.UTC() // GMT, as HTTP dates are
+			} else if err := tm.UnmarshalText([]byte(s)); err != nil {
+				return "must be an HTTP date or an RFC 3339 time"
+			}
+			v.Set(reflect.ValueOf(tm))
+			return ""
+		}
+	}
 	if reflect.PointerTo(t).Implements(reflect.TypeFor[encoding.TextUnmarshaler]()) {
 		isTime := t == reflect.TypeFor[time.Time]()
 		return func(v reflect.Value, s string) string {

@@ -2,6 +2,7 @@ package rest_test
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -83,14 +84,34 @@ func TestMountPanics(t *testing.T) {
 			register: func(api *tyr.API) {
 				api.Handle("links.get", getLink, rest.Route("GET /links/{code}"), rest.Status(http.StatusNoContent))
 			},
-			want: `rest: operation "links.get": Status(204) needs a result without a body, of an empty struct type, not *rest_test.link`,
+			want: `rest: operation "links.get": Status(204) needs a result without JSON members, such as struct{}, not *rest_test.link`,
 		},
 		{
 			name: "205 for a result with a body",
 			register: func(api *tyr.API) {
 				api.Handle("links.get", getLink, rest.Route("GET /links/{code}"), rest.Status(http.StatusResetContent))
 			},
-			want: `rest: operation "links.get": Status(205) needs a result without a body, of an empty struct type, not *rest_test.link`,
+			want: `rest: operation "links.get": Status(205) needs a result without JSON members, such as struct{}, not *rest_test.link`,
+		},
+		{
+			name: "redirect without a Location",
+			register: func(api *tyr.API) {
+				api.Handle("links.follow", getLink, rest.Route("GET /{code}"), rest.Status(http.StatusFound))
+			},
+			want: `rest: operation "links.follow": Status(302) is a redirect, but *rest_test.link has no field with header:"Location"`,
+		},
+		{
+			name: "field that can't set a header",
+			register: func(api *tyr.API) {
+				api.Handle("links.list", func(ctx context.Context, req struct{}) (struct {
+					Links []string `json:"-" header:"Link"`
+				}, error) {
+					return struct {
+						Links []string `json:"-" header:"Link"`
+					}{}, nil
+				}, rest.Route("GET /links"))
+			},
+			want: `rest: operation "links.list": field Links has header:"Link", but its type []string can't set a header`,
 		},
 	}
 	for _, tt := range tests {
@@ -113,6 +134,9 @@ func TestMountPanics(t *testing.T) {
 			if got := panicValue(mount); got != want {
 				t.Errorf("Mount() panicked with %v, want %q", got, want)
 			}
+		}
+		if got, want := panicValue(func() { rest.Mount(http.NewServeMux(), newAPI(), nil) }), "rest: Mount: nil option"; got != want {
+			t.Errorf("Mount() panicked with %v, want %q", got, want)
 		}
 	})
 }
@@ -180,18 +204,27 @@ func TestMount(t *testing.T) {
 }
 
 func TestStatusPanics(t *testing.T) {
-	for _, code := range []int{0, 199, 300, 404} {
-		if got, want := panicValue(func() { rest.Status(code) }), "rest: Status("; !strings.HasPrefix(got.(string), want) {
+	for _, code := range []int{0, 199, 300, 304, 305, 306, 404} {
+		if got, want := panicValue(func() { rest.Status(code) }), "rest: Status("; got == nil || !strings.HasPrefix(got.(string), want) {
 			t.Errorf("Status(%d) panicked with %v, want a panic", code, got)
 		}
 	}
-	for _, code := range []int{200, 201, 299} {
+	for _, code := range []int{200, 201, 299, 301, 302, 303, 307, 308} {
 		if got := panicValue(func() { rest.Status(code) }); got != nil {
 			t.Errorf("Status(%d) panicked with %v", code, got)
 		}
 	}
-	if got, want := panicValue(func() { rest.Status(404) }), "rest: Status(404): want a 2xx status"; got != want {
+	if got, want := panicValue(func() { rest.Status(404) }), "rest: Status(404): want a 2xx status or a redirect: 301, 302, 303, 307 or 308"; got != want {
 		t.Errorf("Status(404) panicked with %v, want %q", got, want)
+	}
+}
+
+func TestChallengePanics(t *testing.T) {
+	for _, c := range []string{"", "Bearer\r\nSet-Cookie: x=1", "Bearer\n"} {
+		want := fmt.Sprintf("rest: Challenge(%q): want a challenge without line breaks", c)
+		if got := panicValue(func() { rest.Challenge(c) }); got != want {
+			t.Errorf("Challenge(%q) panicked with %v, want %q", c, got, want)
+		}
 	}
 }
 

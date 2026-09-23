@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"mime"
 	"net/http"
 	"net/url"
@@ -22,17 +23,19 @@ import (
 
 // handler serves one operation.
 type handler struct {
-	api     *tyr.API // logs with its Logger
-	op      *tyr.Operation
-	binding *plan.Binding
-	status  int   // of a successful response
-	noBody  bool  // results are empty structs, sent without a body
-	limit   int64 // of the request body
+	api        *tyr.API // logs with its Logger
+	op         *tyr.Operation
+	binding    *plan.Binding
+	headers    *plan.Headers // that results set
+	status     int           // of a successful response
+	noBody     bool          // for a redirect or a result without JSON members
+	limit      int64         // of the request body
+	challenges []string      // of the WWW-Authenticate of 401
 }
 
-// newHandler returns the handler of op of api at pattern. It panics if they
-// don't fit together, as described at Mount.
-func newHandler(api *tyr.API, op *tyr.Operation, pattern string) *handler {
+// newHandler returns the handler of op of api at pattern, mounted with m. It
+// panics if they don't fit together, as described at Mount.
+func newHandler(api *tyr.API, op *tyr.Operation, pattern string, m *mount) *handler {
 	if !strings.ContainsAny(pattern, " \t") {
 		panicf(op, "pattern %q has no method, e.g. %q", pattern, "GET "+pattern)
 	}
@@ -55,14 +58,26 @@ func newHandler(api *tyr.API, op *tyr.Operation, pattern string) *handler {
 		}
 	}
 
-	h := &handler{api: api, op: op, binding: b, status: http.StatusOK, limit: defaultLimit}
 	res := op.Res()
-	if h.noBody = res.Kind() == reflect.Struct && res.NumField() == 0; h.noBody {
+	headers, err := plan.NewHeaders(res)
+	if err != nil {
+		panicf(op, "%v", err)
+	}
+	h := &handler{
+		api: api, op: op, binding: b, headers: headers,
+		status: http.StatusOK, limit: defaultLimit, challenges: m.challenges,
+	}
+	if h.noBody = plan.NoMembers(res); h.noBody {
 		h.status = http.StatusNoContent
 	}
 	if status, ok := statusKey.From(op); ok {
-		if (status == http.StatusNoContent || status == http.StatusResetContent) && !h.noBody {
-			panicf(op, "Status(%d) needs a result without a body, of an empty struct type, not %v", status, res)
+		switch {
+		case isRedirect(status) && !headers.Has("Location"):
+			panicf(op, "Status(%d) is a redirect, but %v has no field with header:%q", status, res, "Location")
+		case isRedirect(status):
+			h.noBody = true
+		case (status == http.StatusNoContent || status == http.StatusResetContent) && !h.noBody:
+			panicf(op, "Status(%d) needs a result without JSON members, such as struct{}, not %v", status, res)
 		}
 		h.status = status
 	}
@@ -108,14 +123,14 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx := tyr.WithOperation(r.Context(), h.op)
 	body, readErr := io.ReadAll(http.MaxBytesReader(w, r.Body, h.limit))
 	if _, ok := errors.AsType[*http.MaxBytesError](readErr); ok {
-		h.writeProblem(ctx, w, problem{
+		writeProblem(ctx, h.api.Logger(), w, problem{
 			Status: http.StatusRequestEntityTooLarge,
 			Detail: fmt.Sprintf("request body is larger than %d bytes", h.limit),
 		})
 		return
 	}
 	if len(body) > 0 && !isJSON(r.Header.Get("Content-Type")) {
-		h.writeProblem(ctx, w, problem{
+		writeProblem(ctx, h.api.Logger(), w, problem{
 			Status: http.StatusUnsupportedMediaType,
 			Detail: "request body must be JSON: application/json or a +json type",
 		})
@@ -129,7 +144,8 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return h.decode(dst, body, r)
 	})
 	if err != nil {
-		h.writeError(ctx, w, err)
+		e, _ := err.(*tyr.Error) // Call returns only those
+		writeError(ctx, h.api.Logger(), w, e, h.challenges)
 		return
 	}
 	h.writeResult(ctx, w, res)
@@ -210,20 +226,36 @@ func ranOwnMethod(t reflect.Type, k jsontext.Kind) bool {
 	return k == '"' && p.Implements(reflect.TypeFor[encoding.TextUnmarshaler]())
 }
 
-// writeResult sends a successful result. A result that can't be encoded is
-// a bug of the server: it's logged, and the client gets an internal error.
+// writeResult sends a successful result: the headers its fields set and,
+// unless the response has none, the body. A result that can't be encoded,
+// or a redirect without a Location, is a bug of the server: it's logged,
+// and the client gets an internal error.
 func (h *handler) writeResult(ctx context.Context, w http.ResponseWriter, res any) {
-	if h.noBody {
-		w.WriteHeader(h.status)
-		return
+	fail := func(msg string, args ...any) {
+		h.api.Logger().ErrorContext(ctx, msg, args...)
+		writeError(ctx, h.api.Logger(), w, tyr.Internal("internal error"), nil)
 	}
-	data, err := json.Marshal(res)
+	header, err := h.headers.Of(reflect.ValueOf(res))
 	if err != nil {
-		h.api.Logger().ErrorContext(ctx, "rest: encoding the result", "err", err)
-		h.writeError(ctx, w, tyr.Internal("internal error"))
+		fail("rest: encoding a header of the result", "err", err)
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
+	if isRedirect(h.status) && header.Get("Location") == "" {
+		fail("rest: a redirect without a Location", "status", h.status)
+		return
+	}
+	var data []byte
+	if !h.noBody {
+		if data, err = json.Marshal(res); err != nil {
+			fail("rest: encoding the result", "err", err)
+			return
+		}
+	}
+
+	maps.Copy(w.Header(), header)
+	if !h.noBody {
+		w.Header().Set("Content-Type", "application/json")
+	}
 	w.WriteHeader(h.status)
 	_, _ = w.Write(data)
 }
