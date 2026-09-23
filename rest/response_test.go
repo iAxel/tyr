@@ -187,15 +187,18 @@ func TestWriteError(t *testing.T) {
 		name   string
 		err    error
 		status int
-		logged bool // whether the error is logged
+		logged string // the error logged, "" if none is
 	}{
-		{"not found", tyr.NotFound("link %q not found", "go"), http.StatusNotFound, false},
-		{"wrapped", fmt.Errorf("finding: %w", tyr.NotFound("link %q not found", "go")), http.StatusNotFound, false},
-		{"violations", tyr.Violations{{Pointer: "/code", Detail: "is required"}}.Err(), http.StatusBadRequest, false},
-		{"unauthenticated", tyr.Unauthenticated("log in first"), http.StatusUnauthorized, false},
-		{"deadline", fmt.Errorf("db: %w", context.DeadlineExceeded), http.StatusGatewayTimeout, false},
-		{"plain", errors.New("disk full"), http.StatusInternalServerError, true},
-		{"typed nil", nilErr, http.StatusInternalServerError, true},
+		{"not found", tyr.NotFound("link %q not found", "go"), http.StatusNotFound, ""},
+		{"wrapped", fmt.Errorf("finding: %w", tyr.NotFound("link %q not found", "go")), http.StatusNotFound, ""},
+		{"violations", tyr.Violations{{Pointer: "/code", Detail: "is required"}}.Err(), http.StatusBadRequest, ""},
+		{"unauthenticated", tyr.Unauthenticated("log in first"), http.StatusUnauthorized, ""},
+		{"deadline", fmt.Errorf("db: %w", context.DeadlineExceeded), http.StatusGatewayTimeout, ""},
+		{"plain", errors.New("disk full"), http.StatusInternalServerError, "internal: internal error: disk full"},
+		{"typed nil", nilErr, http.StatusInternalServerError, "internal: internal error: rest: a nil *tyr.Error was written as an error"},
+		// The client gets only "internal error"; the log gets the rest.
+		{"internal", tyr.Internal("disk is full"), http.StatusInternalServerError, "internal: disk is full"},
+		{"unknown kind", &tyr.Error{Kind: tyr.Kind(42), Message: "odd"}, http.StatusInternalServerError, "Kind(42): odd"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -211,20 +214,41 @@ func TestWriteError(t *testing.T) {
 			golden(t, "write_error_"+strings.ReplaceAll(tt.name, " ", "_"), rec.Body.Bytes())
 
 			var record map[string]any
-			if !tt.logged {
+			if tt.logged == "" {
 				if buf.Len() != 0 {
 					t.Errorf("WriteError() logged %s, want nothing", buf.Bytes())
 				}
 				return
 			}
-			if err := json.Unmarshal(buf.Bytes(), &record); err != nil || record["msg"] != "rest: internal error" || record["request_id"] != "req-1" {
-				t.Errorf("WriteError() logged %s, want the error with the request ID", buf.Bytes())
+			if err := json.Unmarshal(buf.Bytes(), &record); err != nil ||
+				record["msg"] != "rest: internal error" || record["err"] != tt.logged || record["request_id"] != "req-1" {
+				t.Errorf("WriteError() logged %s, want the error %q with the request ID", buf.Bytes(), tt.logged)
 			}
 		})
 	}
 
 	if got, want := panicValue(func() { rest.WriteError(httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil), nil) }), "rest: WriteError: nil error"; got != want {
 		t.Errorf("WriteError(nil) panicked with %v, want %q", got, want)
+	}
+}
+
+// Not parallel: it replaces the default logger, which WriteError logs to.
+func TestWriteErrorInternalDetails(t *testing.T) {
+	var buf bytes.Buffer
+	defer slog.SetDefault(slog.Default())
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
+
+	rec := httptest.NewRecorder()
+	err := tyr.Internal("disk is full").WithDetails(expiry{ExpiredAt: "2026-01-01"})
+	rest.WriteError(rec, httptest.NewRequest("GET", "/", nil), err)
+
+	// The client gets neither the message nor the details; the log gets
+	// both.
+	golden(t, "write_error_internal", rec.Body.Bytes())
+	var record map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &record); err != nil ||
+		record["err"] != "internal: disk is full" || fmt.Sprint(record["details"]) != "map[expired_at:2026-01-01]" {
+		t.Errorf("WriteError() logged %s, want the message and the details", buf.Bytes())
 	}
 }
 

@@ -30,27 +30,32 @@ type problem struct {
 // Otherwise, as [tyr.Operation.Call] does for errors no mapper translates,
 // a [context.DeadlineExceeded] becomes [tyr.KindDeadlineExceeded], and any
 // other error, a nil *tyr.Error too, [tyr.KindInternal] with a generic
-// message, and is logged to [slog.Default] with the context of r.
-// WriteError doesn't add the WWW-Authenticate of [Challenge] to a 401.
-// It panics if err is nil.
+// message. An internal error, or one of a kind rest doesn't know, reaches
+// the client as "internal error" only, and WriteError logs it to
+// [slog.Default] with the context of r, with its message, cause and
+// details. WriteError doesn't add the WWW-Authenticate of [Challenge] to a
+// 401. It panics if err is nil.
 func WriteError(w http.ResponseWriter, r *http.Request, err error) {
 	if err == nil {
 		panic("rest: WriteError: nil error")
 	}
-	ctx := r.Context()
 	e, ok := errors.AsType[*tyr.Error](err)
 	switch {
-	case ok && e != nil:
-	case ok: // a nil *tyr.Error, returned as an error by mistake
-		slog.Default().ErrorContext(ctx, "rest: internal error", "err", "a nil *tyr.Error was written as an error")
-		e = tyr.Internal("internal error")
-	case errors.Is(err, context.DeadlineExceeded):
+	case ok && e == nil: // a nil *tyr.Error, returned as an error by mistake
+		e = tyr.Internal("internal error").WithCause(errors.New("rest: a nil *tyr.Error was written as an error"))
+	case !ok && errors.Is(err, context.DeadlineExceeded):
 		e = tyr.DeadlineExceeded("deadline exceeded").WithCause(err)
-	default:
-		slog.Default().ErrorContext(ctx, "rest: internal error", "err", err)
+	case !ok:
 		e = tyr.Internal("internal error").WithCause(err)
 	}
-	writeError(ctx, slog.Default(), w, e, nil)
+	if internal(e.Kind) {
+		args := []any{"err", e}
+		if e.Details != nil {
+			args = append(args, "details", e.Details)
+		}
+		slog.Default().ErrorContext(r.Context(), "rest: internal error", args...)
+	}
+	writeError(r.Context(), slog.Default(), w, e, nil)
 }
 
 // WriteProblem writes a problem of the HTTP request itself, as
@@ -64,15 +69,15 @@ func WriteProblem(w http.ResponseWriter, status int) {
 	writeProblem(context.Background(), slog.Default(), w, problem{Status: status})
 }
 
-// writeError sends e as a problem, or an internal error if e is nil. A 401
-// gets a WWW-Authenticate header per challenge. logger logs details that
-// can't be encoded.
+// writeError sends e as a problem, or an internal error if e is nil. An
+// internal error, or one of a kind rest doesn't know, is sent without its
+// message and details, which are for the logs. A 401 gets a
+// WWW-Authenticate header per challenge. logger logs details that can't be
+// encoded.
 func writeError(ctx context.Context, logger *slog.Logger, w http.ResponseWriter, e *tyr.Error, challenges []string) {
-	if e == nil {
-		e = tyr.Internal("internal error")
-	}
-	p := problem{Status: statusOf(e.Kind), Detail: e.Message, Kind: e.Kind.String()}
-	if e.Kind != tyr.KindInternal { // as in JSON-RPC, internal errors have no details
+	p := problem{Status: http.StatusInternalServerError, Detail: "internal error", Kind: tyr.KindInternal.String()}
+	if e != nil && !internal(e.Kind) {
+		p.Status, p.Detail, p.Kind = statusOf(e.Kind), e.Message, e.Kind.String()
 		if v, ok := e.Details.(tyr.Violations); ok {
 			p.Errors = v
 		} else {
@@ -108,6 +113,13 @@ func statusOf(k tyr.Kind) int {
 		return http.StatusGatewayTimeout
 	}
 	return http.StatusInternalServerError
+}
+
+// internal reports whether errors of kind k are internal to the clients of
+// REST: those of tyr.KindInternal and of kinds rest doesn't know, which get
+// 500 Internal Server Error.
+func internal(k tyr.Kind) bool {
+	return statusOf(k) == http.StatusInternalServerError
 }
 
 // writeProblem sends p as application/problem+json, with the type and the

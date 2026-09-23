@@ -327,6 +327,40 @@ func TestCallLogging(t *testing.T) {
 	}
 }
 
+func TestCallLoggingInternal(t *testing.T) {
+	// Clients get neither the message nor the details of an internal error,
+	// or of an error of a kind tyr doesn't define, so the logs get both.
+	tests := []struct {
+		name string
+		err  error
+		want map[string]string // the attributes of the record
+	}{
+		{
+			name: "internal with details",
+			err:  tyr.Internal("storage is read-only").WithDetails("disk 3"),
+			want: map[string]string{"err": "internal: storage is read-only", "details": "disk 3"},
+		},
+		{
+			name: "unknown kind",
+			err:  &tyr.Error{Kind: tyr.Kind(42), Message: "odd", Details: 7},
+			want: map[string]string{"err": "Kind(42): odd", "details": "7"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := &recorder{}
+			op := tyr.New(tyr.WithLogger(slog.New(rec))).Handle("links.get",
+				func(ctx context.Context, req getLinkReq) (*link, error) { return nil, tt.err })
+			_, _ = op.Call(t.Context(), nil)
+
+			want := []logged{{level: slog.LevelError, msg: "tyr: operation failed", attrs: tt.want, op: "links.get"}}
+			if !reflect.DeepEqual(rec.logs, want) {
+				t.Errorf("logged %+v, want %+v", rec.logs, want)
+			}
+		})
+	}
+}
+
 // TestCallLoggingDefault replaces the global default logger, so it must not
 // run in parallel with other tests.
 func TestCallLoggingDefault(t *testing.T) {

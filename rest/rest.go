@@ -67,9 +67,11 @@
 //
 // The problem's detail is the error's message and its kind is the kind's
 // name. [tyr.Violations] go in its errors member, other details in its
-// details member; internal errors have neither. A 401 carries the
-// WWW-Authenticate challenges of [Challenge]. 413 and 415 have no kind:
-// they are about the HTTP request, and the operation isn't called.
+// details member. An internal error, and one of a kind rest doesn't know,
+// has the detail "internal error", the kind internal and no details: its
+// message and details are for the logs, where the API writes them. A 401
+// carries the WWW-Authenticate challenges of [Challenge]. 413 and 415 have
+// no kind: they are about the HTTP request, and the operation isn't called.
 //
 // A result or details that can't be encoded, or a redirect without a
 // Location, are a bug of the server: they are logged with

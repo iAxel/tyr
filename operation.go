@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"reflect"
 	"runtime/debug"
@@ -207,10 +208,18 @@ func (a *API) logFailure(ctx context.Context, e *Error) {
 	if errors.Is(e, context.Canceled) && errors.Is(ctx.Err(), context.Canceled) {
 		return // the caller has gone; nothing failed on our side
 	}
-	switch e.Kind {
-	case KindInternal:
-		a.Logger().ErrorContext(ctx, "tyr: operation failed", "err", e)
-	case KindDeadlineExceeded, KindUnavailable:
-		a.Logger().WarnContext(ctx, "tyr: operation failed", "err", e)
+	var level slog.Level
+	switch {
+	case e.Kind == KindInternal || !e.Kind.known():
+		level = slog.LevelError
+	case e.Kind == KindDeadlineExceeded || e.Kind == KindUnavailable:
+		level = slog.LevelWarn
+	default:
+		return
 	}
+	args := []any{"err", e}
+	if e.Details != nil {
+		args = append(args, "details", e.Details) // clients don't get those of internal errors
+	}
+	a.Logger().Log(ctx, level, "tyr: operation failed", args...)
 }

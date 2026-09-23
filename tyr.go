@@ -66,8 +66,11 @@ type Option func(*API)
 // A panic is logged at the error level with its stack as soon as it is
 // recovered, even if an interceptor then turns the call into a success.
 // Other errors are logged once, for the call's final result: internal
-// errors at the error level, exceeded deadlines and unavailable services at
-// the warning level, unless the caller canceled the call.
+// errors, and errors of kinds this package doesn't define, at the error
+// level, exceeded deadlines and unavailable services at the warning level,
+// unless the caller canceled the call. A record has the error, with its
+// message and cause, and its details, if any: clients get neither the
+// message nor the details of an internal error.
 //
 // Records are logged with the call's context, which carries the operation;
 // see [OperationFrom]. By default, the API logs to [slog.Default] as it is

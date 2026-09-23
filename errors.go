@@ -39,6 +39,8 @@ const (
 	// KindUnavailable means the service can't handle the request right now;
 	// the caller may retry.
 	KindUnavailable
+
+	numKinds // the number of the kinds above; keep it last
 )
 
 // String returns the name transports send to clients, such as "not_found".
@@ -75,18 +77,30 @@ func (k Kind) MarshalText() ([]byte, error) {
 	return []byte(k.String()), nil
 }
 
+// known reports whether k is one of the kinds this package defines.
+func (k Kind) known() bool {
+	return k < numKinds
+}
+
 // Error is an error meant for the client: a [Kind], a message and optional
 // details. A handler may return other errors too; [Operation.Call] turns
 // them into an Error, by default of [KindInternal] with a generic message.
+//
+// Transports send clients the kind, the message and the details of an
+// Error, except for an error of KindInternal or of a kind this package
+// doesn't define: clients get only "internal error" for it, and the API logs
+// its message and details, see [WithLogger].
 //
 // [Error.WithCause] and [Error.WithDetails] return copies, so an *Error can
 // be shared, e.g. as a package-level variable, and [errors.Is] still matches
 // the copies with it.
 type Error struct {
 	Kind Kind
-	// Message is sent to clients as is, so it must not leak internals.
+	// Message is sent to clients as is, so it must not leak internals;
+	// that of an internal error only goes to the logs.
 	Message string
-	// Details is sent to clients along with Message, e.g. [Violations].
+	// Details is sent to clients along with Message, e.g. [Violations];
+	// those of an internal error only go to the logs.
 	Details any
 
 	cause  error  // logged, never sent
@@ -171,7 +185,8 @@ func (e *Error) clone() *Error {
 }
 
 // Internal returns an [Error] of kind [KindInternal] with a message
-// formatted as with [fmt.Sprintf].
+// formatted as with [fmt.Sprintf]. Clients get only "internal error" for it,
+// and its message goes to the logs.
 func Internal(format string, args ...any) *Error {
 	return &Error{Kind: KindInternal, Message: fmt.Sprintf(format, args...)}
 }
