@@ -6,7 +6,7 @@
 [![Go](https://img.shields.io/github/go-mod/go-version/iAxel/tyr)](go.mod)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Typed operations for Go: write a handler once as a plain function, serve it over REST and JSON-RPC.
+Typed operations for Go: write a handler once as a plain function, serve it over REST and JSON-RPC, and call it with a typed client.
 
 ## Installation
 
@@ -59,6 +59,7 @@ tyr decodes the request, from the JSON body and then the fields tagged `path`, `
 
 - Handlers are plain functions, [`func(ctx, Req) (Res, error)`](https://pkg.go.dev/github.com/iaxel/tyr#Handler), with no HTTP types
 - One operation over [REST](https://pkg.go.dev/github.com/iaxel/tyr/rest) and [JSON-RPC 2.0](https://pkg.go.dev/github.com/iaxel/tyr/jsonrpc), by its name
+- [Contracts](https://pkg.go.dev/github.com/iaxel/tyr#Define) that the server and a typed [JSON-RPC client](https://pkg.go.dev/github.com/iaxel/tyr/jsonrpc#Client) share, checked by the compiler, without codegen, and an [in-process client](https://pkg.go.dev/github.com/iaxel/tyr/jsonrpc#InProcess) for tests
 - [Binding](https://pkg.go.dev/github.com/iaxel/tyr/rest#hdr-Requests) from the JSON body, the path, the query and headers
 - [Validation](https://pkg.go.dev/github.com/iaxel/tyr#hdr-Validation) by tags in the syntax of go-playground/validator and by a `Validate` method
 - [Errors of kinds](https://pkg.go.dev/github.com/iaxel/tyr#Kind): RFC 9457 problems over REST, error codes over JSON-RPC
@@ -82,7 +83,7 @@ Whether you come from Go or from NestJS and Hono, each piece should look familia
 | `validate:"required,min=4"` | DTO + class-validator | go-playground/validator, Gin's `binding` |
 | `Interceptor` + `MetaKey` | Interceptor, Guard + decorator | gRPC interceptor, context key |
 | `MapError` | ExceptionFilter, `app.onError` | Echo's `HTTPErrorHandler` |
-| `Define` + client (v0.3) | tRPC, Hono RPC, Eden | gRPC proto contract, without codegen |
+| `Define` + client | tRPC, Hono RPC, Eden | gRPC proto contract, without codegen |
 
 Týr, the Norse god of law and oaths, put his hand in Fenrir's jaws as the pledge of a fair deal; tyr keeps contracts the compiler checks. ᛏ is his rune.
 
@@ -94,7 +95,7 @@ Týr, the Norse god of law and oaths, put his hand in Fenrir's jaws as the pledg
 - Request and response only. Streaming, server-sent events and WebSockets go to plain handlers too, and consumers of event streams are out of scope.
 - JSON-RPC takes params by name only.
 - Validation implements a subset of the tags of go-playground/validator, with the semantics of v10.30.5: `required`, `omitempty`, `min`, `max`, `len`, `gt`, `gte`, `lt`, `lte`, `oneof`, `email`, `url`, `http_url` and `uuid`, without `dive` and `|`. An unknown rule panics at startup. Rules between fields go in a `Validate` method; an adapter for all of go-playground is planned.
-- No typed client yet (v0.3), and no OpenAPI or OpenRPC yet.
+- The typed client speaks JSON-RPC and sends one call per request; a REST client is planned. No OpenAPI or OpenRPC yet.
 - Authorization belongs in interceptors, not in the middleware of a route: over JSON-RPC, an operation has no route of its own.
 
 ## Examples
@@ -243,6 +244,41 @@ mux.Handle("POST /rpc", jsonrpc.Handler(api))
 // => 200 {"jsonrpc":"2.0","error":{"code":404,"message":"link \"gone\" not found","data":{"kind":"not_found"}},"id":2}
 ```
 
+### [Call an operation with a typed client](https://pkg.go.dev/github.com/iaxel/tyr/jsonrpc#example-Client)
+
+A contract, made by `tyr.Define`, is a value that the server and its clients share. `Implement` doesn't compile unless the handler fits it, and `Call` takes its request type and returns its result type. An error of the server comes back as a `*tyr.Error` of its kind. Here `InProcess` serves the calls in memory, as in a test; another program passes an `http.Client` with a timeout and the URL of the service:
+
+<!-- Output: jsonrpc.ExampleClient -->
+```go
+getLink := tyr.Define[GetLinkReq, *Link]("links.get") // shared with the clients
+
+api.Implement(getLink, func(ctx context.Context, req GetLinkReq) (*Link, error) {
+	if req.Code != "go" {
+		return nil, tyr.NotFound("link %q not found", req.Code)
+	}
+	return &Link{Code: "go", URL: "https://go.dev"}, nil
+})
+
+c := jsonrpc.NewClient("http://links/rpc", jsonrpc.InProcess(jsonrpc.Handler(api)))
+link, err := c.Call(ctx, getLink, GetLinkReq{Code: code})
+if e, ok := errors.AsType[*tyr.Error](err); ok {
+	fmt.Println(e.Kind, e.Message, e.Details)
+} else if err != nil {
+	fmt.Println(err) // no answer that fits the call
+} else {
+	fmt.Println(link.URL)
+}
+
+// code "go"
+// => https://go.dev
+// code "gone"
+// => not_found link "gone" not found <nil>
+// code "", which GetLinkReq requires
+// => invalid_argument validation failed [{"pointer":"/code","detail":"is required"}]
+```
+
+Any other error of `Call`, such as a failed connection or a 503 of a load balancer, isn't a `*tyr.Error`: the documentation of [`Client`](https://pkg.go.dev/github.com/iaxel/tyr/jsonrpc#Client) shows how to report those as `unavailable`.
+
 ### [Log with the request ID and the operation](https://pkg.go.dev/github.com/iaxel/tyr#example-NewLogHandler)
 
 There is no logger in the context: code logs with the context, and `tyr.NewLogHandler` adds the request ID and the operation of the context to every record, at its top level, even in a group:
@@ -305,7 +341,7 @@ func metrics(next http.Handler) http.Handler {
 // => POST /rpc -
 ```
 
-A whole service, [`examples/shortlink`](examples/shortlink), is a URL shortener built on tyr the way a user would build it: an in-memory store, REST and JSON-RPC, validation, `MapError`, authorization with an interceptor, middleware, graceful shutdown and end-to-end tests.
+A whole service, [`examples/shortlink`](examples/shortlink), is a URL shortener built on tyr the way a user would build it: an in-memory store, REST and JSON-RPC, a contract that its tests call with the typed client, validation, `MapError`, authorization with an interceptor, middleware, graceful shutdown and end-to-end tests.
 
 ## Middleware
 
@@ -323,7 +359,7 @@ A whole service, [`examples/shortlink`](examples/shortlink), is a URL shortener 
 
 - [x] v0.1: REST
 - [x] v0.2: JSON-RPC 2.0, the `canceled` kind, `RequestInfo` for access logs and metrics
-- [ ] v0.3: contracts (`Define`), a typed JSON-RPC client, an in-process client for tests
+- [x] v0.3: contracts (`Define`), a typed JSON-RPC client, an in-process client for tests
 - [ ] JSON Schema, OpenAPI 3.1 and OpenRPC from the same types
 - [ ] OpenTelemetry, timeouts, CORS and an adapter for all of go-playground/validator
 - [ ] Later: a REST client, a TypeScript client, NATS and MCP

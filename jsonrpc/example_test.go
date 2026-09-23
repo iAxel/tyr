@@ -39,12 +39,14 @@ func ExampleClient() {
 		link, err := c.Call(context.Background(), getLink, GetLinkReq{Code: code})
 		if e, ok := errors.AsType[*tyr.Error](err); ok {
 			fmt.Println(e.Kind, e.Message, e.Details)
-			continue
+		} else if err != nil {
+			fmt.Println(err) // no answer that fits the call
+		} else {
+			fmt.Println(link.URL)
 		}
-		fmt.Println(link.URL, err)
 	}
 	// Output:
-	// https://go.dev <nil>
+	// https://go.dev
 	// not_found link "gone" not found <nil>
 	// invalid_argument validation failed [{"pointer":"/code","detail":"is required"}]
 }
