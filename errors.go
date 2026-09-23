@@ -97,7 +97,14 @@ type Error struct {
 // and a cause whose text repeats the message; the cause is still there for
 // [errors.Is] and [errors.As]. Clients never see it: transports send only
 // Kind, Message and Details.
+//
+// Error, Unwrap and Is take a nil *Error too, which a function may return
+// as an error by mistake: Error returns "<nil>", as fmt prints a nil
+// pointer, Unwrap nil, and Is false, so that errors.Is doesn't panic.
 func (e *Error) Error() string {
+	if e == nil {
+		return "<nil>"
+	}
 	s := e.Kind.String()
 	if e.Message != "" {
 		s += ": " + e.Message
@@ -112,6 +119,9 @@ func (e *Error) Error() string {
 
 // Unwrap returns the cause set by [Error.WithCause], or nil.
 func (e *Error) Unwrap() error {
+	if e == nil {
+		return nil
+	}
 	return e.cause
 }
 
@@ -126,6 +136,9 @@ func (e *Error) Unwrap() error {
 //
 // Distinct errors never match, even with the same kind and message.
 func (e *Error) Is(target error) bool {
+	if e == nil {
+		return false
+	}
 	for o := e.origin; o != nil; o = o.origin {
 		if target == o {
 			return true

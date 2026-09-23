@@ -1,9 +1,11 @@
 package tyr_test
 
 import (
+	"context"
 	"encoding/json/v2"
 	"errors"
 	"fmt"
+	"io"
 	"slices"
 	"testing"
 
@@ -199,6 +201,24 @@ func TestErrorIs(t *testing.T) {
 				t.Errorf("errors.Is() = %t, want %t", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestNilError(t *testing.T) {
+	// A nil *Error that a function returned as an error by mistake: errors.Is
+	// calls its Is and then its Unwrap, and logs call its Error.
+	var e *tyr.Error
+	var err error = e
+	for _, target := range []error{errLinkExpired, context.DeadlineExceeded, io.EOF} {
+		if errors.Is(err, target) || errors.Is(fmt.Errorf("wrapped: %w", err), target) {
+			t.Errorf("errors.Is(nil *Error, %v) = true, want false", target)
+		}
+	}
+	if got := errors.Unwrap(err); got != nil {
+		t.Errorf("errors.Unwrap(nil *Error) = %v, want <nil>", got)
+	}
+	if got := err.Error(); got != "<nil>" {
+		t.Errorf("nil *Error: Error() = %q, want <nil>", got)
 	}
 }
 
