@@ -1,0 +1,229 @@
+package rest
+
+import (
+	"context"
+	"encoding"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
+	"errors"
+	"fmt"
+	"io"
+	"mime"
+	"net/http"
+	"net/url"
+	"reflect"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/iaxel/tyr"
+	"github.com/iaxel/tyr/internal/plan"
+)
+
+// handler serves one operation.
+type handler struct {
+	api     *tyr.API // logs with its Logger
+	op      *tyr.Operation
+	binding *plan.Binding
+	status  int   // of a successful response
+	noBody  bool  // results are empty structs, sent without a body
+	limit   int64 // of the request body
+}
+
+// newHandler returns the handler of op of api at pattern. It panics if they
+// don't fit together, as described at Mount.
+func newHandler(api *tyr.API, op *tyr.Operation, pattern string) *handler {
+	if !strings.ContainsAny(pattern, " \t") {
+		panicf(op, "pattern %q has no method, e.g. %q", pattern, "GET "+pattern)
+	}
+	// Let ServeMux check the syntax before the wildcards are looked at.
+	handle(http.NewServeMux(), op, pattern, http.NotFoundHandler())
+
+	b, err := plan.NewBinding(op.Req())
+	if err != nil {
+		panicf(op, "%v", err)
+	}
+	wildcards := wildcardsOf(pattern)
+	for _, name := range wildcards {
+		if !slices.ContainsFunc(b.Fields, func(f plan.Field) bool { return f.Source == plan.Path && f.Name == name }) {
+			panicf(op, "pattern %q has wildcard {%s}, but %v has no field with path:%q", pattern, name, op.Req(), name)
+		}
+	}
+	for _, f := range b.Fields {
+		if f.Source == plan.Path && !slices.Contains(wildcards, f.Name) {
+			panicf(op, "field %s has path:%q, but pattern %q has no wildcard {%s}", f.GoName, f.Name, pattern, f.Name)
+		}
+	}
+
+	h := &handler{api: api, op: op, binding: b, status: http.StatusOK, limit: defaultLimit}
+	res := op.Res()
+	if h.noBody = res.Kind() == reflect.Struct && res.NumField() == 0; h.noBody {
+		h.status = http.StatusNoContent
+	}
+	if status, ok := statusKey.From(op); ok {
+		if (status == http.StatusNoContent || status == http.StatusResetContent) && !h.noBody {
+			panicf(op, "Status(%d) needs a result without a body, of an empty struct type, not %v", status, res)
+		}
+		h.status = status
+	}
+	if limit, ok := limitKey.From(op); ok {
+		h.limit = limit
+	}
+	return h
+}
+
+// wildcardsOf returns the names of the wildcards in a valid pattern, such as
+// "code" for "GET /links/{code}"; {$} isn't one.
+func wildcardsOf(pattern string) []string {
+	var names []string
+	for seg := range strings.SplitSeq(pattern[strings.IndexByte(pattern, '/'):], "/") {
+		if name, ok := strings.CutPrefix(seg, "{"); ok {
+			if name = strings.TrimSuffix(strings.TrimSuffix(name, "}"), "..."); name != "$" {
+				names = append(names, name)
+			}
+		}
+	}
+	return names
+}
+
+// handle registers h on mux. It adds op to a panic of ServeMux, such as one
+// over a conflict, since ServeMux points to this package as the place of
+// registration.
+func handle(mux *http.ServeMux, op *tyr.Operation, pattern string, h http.Handler) {
+	defer func() {
+		if v := recover(); v != nil {
+			panicf(op, "%v", v)
+		}
+	}()
+	mux.Handle(pattern, h)
+}
+
+// panicf panics with a message about op.
+func panicf(op *tyr.Operation, format string, args ...any) {
+	panic(fmt.Sprintf("rest: operation %q: ", op.Name()) + fmt.Sprintf(format, args...))
+}
+
+func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// The operation stays in the context after the call, for the logs.
+	ctx := tyr.WithOperation(r.Context(), h.op)
+	body, readErr := io.ReadAll(http.MaxBytesReader(w, r.Body, h.limit))
+	if _, ok := errors.AsType[*http.MaxBytesError](readErr); ok {
+		h.writeProblem(ctx, w, problem{
+			Status: http.StatusRequestEntityTooLarge,
+			Detail: fmt.Sprintf("request body is larger than %d bytes", h.limit),
+		})
+		return
+	}
+	if len(body) > 0 && !isJSON(r.Header.Get("Content-Type")) {
+		h.writeProblem(ctx, w, problem{
+			Status: http.StatusUnsupportedMediaType,
+			Detail: "request body must be JSON: application/json or a +json type",
+		})
+		return
+	}
+
+	res, err := h.op.Call(ctx, func(dst any) error {
+		if readErr != nil {
+			return readErr
+		}
+		return h.decode(dst, body, r)
+	})
+	if err != nil {
+		h.writeError(ctx, w, err)
+		return
+	}
+	h.writeResult(ctx, w, res)
+}
+
+// isJSON reports whether contentType is a JSON media type: application/json
+// or a type with the +json suffix, with any parameters.
+func isJSON(contentType string) bool {
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err != nil && !errors.Is(err, mime.ErrInvalidMediaParameter) {
+		return false
+	}
+	return mediaType == "application/json" || strings.HasSuffix(mediaType, "+json")
+}
+
+// decode fills in dst, a *Req, from the body and then from the path, the
+// query and the headers.
+func (h *handler) decode(dst any, body []byte, r *http.Request) error {
+	if len(body) > 0 {
+		if err := json.Unmarshal(body, dst); err != nil {
+			return bodyError(err)
+		}
+	}
+
+	var query url.Values // parsed on first use
+	problems := h.binding.Bind(reflect.ValueOf(dst).Elem(), func(src plan.Source, name string) ([]string, bool) {
+		switch src {
+		case plan.Path:
+			return []string{r.PathValue(name)}, true
+		case plan.Query:
+			if query == nil {
+				query = r.URL.Query()
+			}
+			values := query[name]
+			return values, len(values) > 0
+		}
+		values := r.Header.Values(name)
+		return values, len(values) > 0
+	})
+	var v tyr.Violations
+	for _, p := range problems {
+		v.Add(p.Field.JSON, fmt.Sprintf("%s %q: %s", p.Field.Source, p.Field.Name, p.Detail))
+	}
+	return v.Err()
+}
+
+// bodyError turns an error decoding the body into a violation: at the value
+// that doesn't fit its field, or at the whole body, with the byte offset,
+// if the JSON is broken.
+func bodyError(err error) error {
+	v := tyr.Violations{{Detail: "invalid JSON"}}
+	if se, ok := errors.AsType[*json.SemanticError](err); ok {
+		v[0] = tyr.Violation{Pointer: string(se.JSONPointer), Detail: describe(se)}
+	} else if se, ok := errors.AsType[*jsontext.SyntacticError](err); ok {
+		v[0].Detail = fmt.Sprintf("invalid JSON at byte offset %d: %v", se.ByteOffset, se.Err)
+	}
+	return v.Err()
+}
+
+// describe says what the value at a semantic error must be. A type that
+// unmarshals itself speaks for itself, in the error its method returned.
+func describe(se *json.SemanticError) string {
+	t := se.GoType
+	if se.Err != nil && t != nil && t != reflect.TypeFor[time.Time]() && ranOwnMethod(t, se.JSONKind) {
+		return se.Err.Error()
+	}
+	return plan.Describe(t)
+}
+
+// ranOwnMethod reports whether decoding a JSON value of kind k into type t
+// calls a method of t: UnmarshalJSON for any value, UnmarshalText only for
+// a string.
+func ranOwnMethod(t reflect.Type, k jsontext.Kind) bool {
+	p := reflect.PointerTo(t)
+	if p.Implements(reflect.TypeFor[json.Unmarshaler]()) || p.Implements(reflect.TypeFor[json.UnmarshalerFrom]()) {
+		return true
+	}
+	return k == '"' && p.Implements(reflect.TypeFor[encoding.TextUnmarshaler]())
+}
+
+// writeResult sends a successful result. A result that can't be encoded is
+// a bug of the server: it's logged, and the client gets an internal error.
+func (h *handler) writeResult(ctx context.Context, w http.ResponseWriter, res any) {
+	if h.noBody {
+		w.WriteHeader(h.status)
+		return
+	}
+	data, err := json.Marshal(res)
+	if err != nil {
+		h.api.Logger().ErrorContext(ctx, "rest: encoding the result", "err", err)
+		h.writeError(ctx, w, tyr.Internal("internal error"))
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(h.status)
+	_, _ = w.Write(data)
+}

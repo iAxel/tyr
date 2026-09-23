@@ -101,7 +101,8 @@ func (op *Operation) Res() reflect.Type {
 // decode fills in a new request, which it gets as a *Req; a nil decode
 // leaves the request zero. Decode errors that don't contain an [Error] are
 // reported as [KindInvalidArgument]. The contexts of the interceptors and
-// the handler carry the operation; see [OperationFrom].
+// the handler carry the operation; Call adds it to ctx unless ctx already
+// carries it, see [WithOperation] and [OperationFrom].
 //
 // The error Call returns is either nil or an *Error. An error that contains
 // an Error is reduced to it; others go through the mappers added by
@@ -112,7 +113,9 @@ func (op *Operation) Res() reflect.Type {
 // [http.ErrAbortHandler], which Call panics with again. Failed calls that
 // need attention are logged; see [WithLogger].
 func (op *Operation) Call(ctx context.Context, decode func(dst any) error) (any, error) {
-	ctx = operationKey.Set(ctx, op)
+	if cur, ok := OperationFrom(ctx); !ok || cur != op {
+		ctx = WithOperation(ctx, op)
+	}
 	res, err := op.run(ctx, decode)
 	if err != nil {
 		e := op.api.resolve(err)
@@ -168,7 +171,7 @@ func (a *API) recoverCall(ctx context.Context, res *any, err *error) {
 	if v == http.ErrAbortHandler {
 		panic(v)
 	}
-	a.logger().ErrorContext(ctx, "tyr: panic", "panic", v, "stack", string(debug.Stack()))
+	a.Logger().ErrorContext(ctx, "tyr: panic", "panic", v, "stack", string(debug.Stack()))
 	*res, *err = nil, Internal("internal error").WithCause(&panicError{value: v})
 }
 
@@ -198,8 +201,8 @@ func (a *API) logFailure(ctx context.Context, e *Error) {
 	}
 	switch e.Kind {
 	case KindInternal:
-		a.logger().ErrorContext(ctx, "tyr: operation failed", "err", e)
+		a.Logger().ErrorContext(ctx, "tyr: operation failed", "err", e)
 	case KindDeadlineExceeded, KindUnavailable:
-		a.logger().WarnContext(ctx, "tyr: operation failed", "err", e)
+		a.Logger().WarnContext(ctx, "tyr: operation failed", "err", e)
 	}
 }

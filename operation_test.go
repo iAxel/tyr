@@ -336,6 +336,19 @@ func TestCallLoggingDefault(t *testing.T) {
 		return nil, errors.New("db: connection refused")
 	})
 
+	rec := &recorder{}
+	useDefaultLogger(t, slog.New(rec))
+
+	_, _ = op.Call(t.Context(), nil)
+	if len(rec.logs) != 1 || rec.logs[0].msg != "tyr: operation failed" {
+		t.Errorf("slog.Default() got %+v, want the failed call", rec.logs)
+	}
+}
+
+// useDefaultLogger makes l the default logger until the end of the test.
+// That's global state, so a test that calls it must not run in parallel
+// with other tests.
+func useDefaultLogger(t *testing.T, l *slog.Logger) {
 	// slog.SetDefault redirects the log package too, so restore it as well.
 	logger, out, flags := slog.Default(), log.Writer(), log.Flags()
 	t.Cleanup(func() {
@@ -343,13 +356,7 @@ func TestCallLoggingDefault(t *testing.T) {
 		log.SetOutput(out)
 		log.SetFlags(flags)
 	})
-	rec := &recorder{}
-	slog.SetDefault(slog.New(rec))
-
-	_, _ = op.Call(t.Context(), nil)
-	if len(rec.logs) != 1 || rec.logs[0].msg != "tyr: operation failed" {
-		t.Errorf("slog.Default() got %+v, want the failed call", rec.logs)
-	}
+	slog.SetDefault(l)
 }
 
 func TestCallConcurrent(t *testing.T) {

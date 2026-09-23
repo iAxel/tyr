@@ -3,6 +3,7 @@ package tyr_test
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"reflect"
 	"slices"
 	"testing"
@@ -221,6 +222,24 @@ func TestSeal(t *testing.T) {
 	}
 	if _, err := get.Call(t.Context(), nil); err != nil {
 		t.Errorf("Call() on a sealed API = %v, want <nil>", err)
+	}
+}
+
+// TestAPILogger replaces the global default logger, so it must not run in
+// parallel with other tests.
+func TestAPILogger(t *testing.T) {
+	logger := slog.New(slog.DiscardHandler)
+	if got := tyr.New(tyr.WithLogger(logger)).Logger(); got != logger {
+		t.Errorf("Logger() = %p, want the logger of WithLogger, %p", got, logger)
+	}
+
+	// Without WithLogger, Logger returns slog.Default as it is at the time
+	// of the call, so it sees a default set after the API was created.
+	api := tyr.New()
+	def := slog.New(slog.DiscardHandler)
+	useDefaultLogger(t, def)
+	if got := api.Logger(); got != def {
+		t.Errorf("Logger() = %p, want the current default logger, %p", got, def)
 	}
 }
 

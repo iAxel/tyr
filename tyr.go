@@ -139,8 +139,11 @@ func (a *API) checkOpen(call string) {
 	}
 }
 
-// logger returns the logger set by WithLogger or the default one.
-func (a *API) logger() *slog.Logger {
+// Logger returns the logger set by [WithLogger] or, without one,
+// [slog.Default] as it is at the time of the call. The API and its
+// transports log with it. Call Logger when logging rather than keeping its
+// result, so that a default logger set later is used too.
+func (a *API) Logger() *slog.Logger {
 	if a.log != nil {
 		return a.log
 	}
