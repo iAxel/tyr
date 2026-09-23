@@ -68,11 +68,11 @@ func newOperation[Req, Res any](a *API, name string, h Handler[Req, Res], valida
 			}
 			if validates {
 				if err := any(r).(Validator).Validate(); err != nil {
-					return nil, a.validationError(err)
+					return nil, a.validationError(ctx, err)
 				}
 			}
 			if res, err = h(ctx, *r); err != nil {
-				return nil, a.resolve(err)
+				return nil, a.resolve(ctx, err)
 			}
 			return res, nil
 		},
@@ -137,9 +137,13 @@ func (op *Operation) Res() reflect.Type {
 // The error Call returns is either nil or an *Error. An error that contains
 // an Error is reduced to it; others go through the mappers added by
 // [API.MapError], and those no mapper translates become
-// [KindDeadlineExceeded] if they are a [context.DeadlineExceeded] and
-// [KindInternal] with a generic message otherwise. A nil *Error returned as
-// a non-nil error becomes [KindInternal] too. So does a panic, except for
+// [KindDeadlineExceeded] if they are a [context.DeadlineExceeded],
+// [KindCanceled] if they are a [context.Canceled] and the context of the
+// handler or interceptor that returned them is canceled too, as when the
+// client goes away, and [KindInternal] with a generic message otherwise.
+// A context.Canceled while that context is alive didn't come from the
+// caller, so it's internal. A nil *Error returned as a non-nil error
+// becomes [KindInternal] too. So does a panic, except for
 // [http.ErrAbortHandler], which Call panics with again. Failed calls that
 // need attention are logged; see [WithLogger].
 func (op *Operation) Call(ctx context.Context, decode func(dst any) error) (any, error) {
@@ -153,7 +157,7 @@ func (op *Operation) Call(ctx context.Context, decode func(dst any) error) (any,
 		}
 	}
 	if err != nil {
-		e := op.api.resolve(err)
+		e := op.api.resolve(ctx, err)
 		op.api.logFailure(ctx, e)
 		return nil, e
 	}
@@ -175,8 +179,8 @@ func (op *Operation) run(ctx context.Context, decode func(dst any) error) (res a
 }
 
 // resolve turns the error of a failed call into an Error, as described at
-// Operation.Call.
-func (a *API) resolve(err error) *Error {
+// Operation.Call. ctx is the context of the link the error came from.
+func (a *API) resolve(ctx context.Context, err error) *Error {
 	if e, ok := errors.AsType[*Error](err); ok {
 		if e == nil {
 			return Internal("internal error").WithCause(errors.New("tyr: a nil *tyr.Error was returned as an error"))
@@ -190,6 +194,12 @@ func (a *API) resolve(err error) *Error {
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return DeadlineExceeded("deadline exceeded").WithCause(err)
+	}
+	// Unless ctx is canceled too, the cancellation didn't come from the
+	// caller: a context of some other request, or one that went stale, got
+	// to where it shouldn't have.
+	if errors.Is(err, context.Canceled) && errors.Is(ctx.Err(), context.Canceled) {
+		return Canceled("canceled").WithCause(err)
 	}
 	return Internal("internal error").WithCause(err)
 }

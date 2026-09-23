@@ -27,6 +27,7 @@ func TestKindString(t *testing.T) {
 		{tyr.KindResourceExhausted, "resource_exhausted"},
 		{tyr.KindDeadlineExceeded, "deadline_exceeded"},
 		{tyr.KindUnavailable, "unavailable"},
+		{tyr.KindCanceled, "canceled"},
 		{tyr.Kind(42), "Kind(42)"},
 	}
 	for _, tt := range tests {
@@ -67,6 +68,7 @@ func TestConstructors(t *testing.T) {
 		{"ResourceExhausted", tyr.ResourceExhausted, tyr.KindResourceExhausted},
 		{"DeadlineExceeded", tyr.DeadlineExceeded, tyr.KindDeadlineExceeded},
 		{"Unavailable", tyr.Unavailable, tyr.KindUnavailable},
+		{"Canceled", tyr.Canceled, tyr.KindCanceled},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

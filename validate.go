@@ -1,6 +1,7 @@
 package tyr
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"reflect"
@@ -111,10 +112,10 @@ func validateConflict(t reflect.Type, seen map[reflect.Type]bool) (path, names [
 }
 
 // validationError turns an error of Validate into an Error, as described
-// at Validator.
-func (a *API) validationError(err error) *Error {
+// at Validator. ctx is the context of the handler.
+func (a *API) validationError(ctx context.Context, err error) *Error {
 	if _, ok := errors.AsType[*Error](err); ok {
-		return a.resolve(err) // as is; a nil *Error becomes internal
+		return a.resolve(ctx, err) // as is; a nil *Error becomes internal
 	}
 	return &Error{Kind: KindInvalidArgument, Message: err.Error(), cause: err}
 }

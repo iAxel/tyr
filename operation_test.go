@@ -120,6 +120,8 @@ func TestCallErrors(t *testing.T) {
 		{"wrapped Error", fmt.Errorf("get: %w", notFound), tyr.KindNotFound, "link not found", false},
 		{"mapped", fmt.Errorf("get: %w", errStoreNotFound), tyr.KindNotFound, "link not found", true},
 		{"deadline", fmt.Errorf("db: %w", context.DeadlineExceeded), tyr.KindDeadlineExceeded, "deadline exceeded", true},
+		// The context of the call is alive: see TestCallCanceled.
+		{"canceled", fmt.Errorf("db: %w", context.Canceled), tyr.KindInternal, "internal error", true},
 		{"unmapped", errors.New("db: connection refused"), tyr.KindInternal, "internal error", true},
 	}
 	for _, tt := range tests {
@@ -152,6 +154,69 @@ func TestCallErrors(t *testing.T) {
 			}
 			if !slices.Equal(mapped, wantMapped) {
 				t.Errorf("the mappers got %v, want %v", mapped, wantMapped)
+			}
+		})
+	}
+}
+
+func TestCallCanceled(t *testing.T) {
+	// A context.Canceled is a canceled call only if the context of the link
+	// it came from is canceled too.
+	canceled := func(ctx context.Context) context.Context {
+		ctx, cancel := context.WithCancel(ctx)
+		cancel()
+		return ctx
+	}
+	tests := []struct {
+		name     string
+		byCaller bool            // whether the caller of Call cancels it
+		inner    tyr.Interceptor // runs around the handler, if set
+		wantKind tyr.Kind
+		wantMsg  string
+	}{
+		{name: "by the caller", byCaller: true, wantKind: tyr.KindCanceled, wantMsg: "canceled"},
+		{name: "not by the caller", wantKind: tyr.KindInternal, wantMsg: "internal error"},
+		{
+			// The interceptor is the caller of the handler.
+			name: "by an interceptor",
+			inner: func(ctx context.Context, op *tyr.Operation, req any, next tyr.Invoker) (any, error) {
+				return next(canceled(ctx), req)
+			},
+			wantKind: tyr.KindCanceled,
+			wantMsg:  "canceled",
+		},
+		{
+			name:     "in an interceptor",
+			byCaller: true,
+			inner: func(ctx context.Context, op *tyr.Operation, req any, next tyr.Invoker) (any, error) {
+				return nil, ctx.Err()
+			},
+			wantKind: tyr.KindCanceled,
+			wantMsg:  "canceled",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := &recorder{}
+			api := tyr.New(tyr.WithLogger(slog.New(rec)))
+			if tt.inner != nil {
+				api.Use(tt.inner)
+			}
+			op := api.Handle("links.get", func(ctx context.Context, req getLinkReq) (*link, error) {
+				return nil, fmt.Errorf("db: %w", context.Canceled) // whatever its context
+			})
+			ctx := t.Context()
+			if tt.byCaller {
+				ctx = canceled(ctx)
+			}
+			_, err := op.Call(ctx, nil)
+
+			if e, ok := err.(*tyr.Error); !ok || e.Kind != tt.wantKind || e.Message != tt.wantMsg || !errors.Is(err, context.Canceled) {
+				t.Errorf("Call() error = %v, want %v with message %q, caused by context.Canceled", err, tt.wantKind, tt.wantMsg)
+			}
+			// Nothing failed on the side of the service.
+			if tt.wantKind == tyr.KindCanceled && len(rec.logs) != 0 {
+				t.Errorf("logged %+v, want nothing", rec.logs)
 			}
 		})
 	}
@@ -296,6 +361,8 @@ func TestCallLogging(t *testing.T) {
 		{"invalid argument", tyr.InvalidArgument("code is too long"), false, 0, ""},
 		{"canceled by the caller", context.Canceled, true, 0, ""},
 		{"canceled inside", context.Canceled, false, slog.LevelError, "internal: internal error: context canceled"},
+		{"canceled kind", tyr.Canceled("stopped"), false, 0, ""},
+		{"internal, caused by the caller's cancellation", tyr.Internal("query failed").WithCause(context.Canceled), true, 0, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

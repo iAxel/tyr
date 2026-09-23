@@ -43,6 +43,10 @@ const (
 	// KindUnavailable means the service can't handle the request right now;
 	// the caller may retry.
 	KindUnavailable
+	// KindCanceled means the caller canceled the call, e.g. the client went
+	// away before the response. It is the CANCELLED code of gRPC, spelled
+	// as in [context.Canceled].
+	KindCanceled
 
 	numKinds // the number of the kinds above; keep it last
 )
@@ -71,6 +75,8 @@ func (k Kind) String() string {
 		return "deadline_exceeded"
 	case KindUnavailable:
 		return "unavailable"
+	case KindCanceled:
+		return "canceled"
 	}
 	return "Kind(" + strconv.Itoa(int(k)) + ")"
 }
@@ -247,6 +253,12 @@ func DeadlineExceeded(format string, args ...any) *Error {
 // formatted as with [fmt.Sprintf].
 func Unavailable(format string, args ...any) *Error {
 	return &Error{Kind: KindUnavailable, Message: fmt.Sprintf(format, args...)}
+}
+
+// Canceled returns an [Error] of kind [KindCanceled] with a message
+// formatted as with [fmt.Sprintf].
+func Canceled(format string, args ...any) *Error {
+	return &Error{Kind: KindCanceled, Message: fmt.Sprintf(format, args...)}
 }
 
 // Violation is a field that failed validation. Its shape follows the

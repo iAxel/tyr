@@ -28,13 +28,14 @@ type problem struct {
 // application/problem+json with the status of its kind, for handlers
 // outside operations. An err that contains a [tyr.Error] is written as is.
 // Otherwise, as [tyr.Operation.Call] does for errors no mapper translates,
-// a [context.DeadlineExceeded] becomes [tyr.KindDeadlineExceeded], and any
-// other error, a nil *tyr.Error too, [tyr.KindInternal] with a generic
-// message. An internal error, or one of a kind rest doesn't know, reaches
-// the client as "internal error" only, and WriteError logs it to
-// [slog.Default] with the context of r, with its message, cause and
-// details. WriteError doesn't add the WWW-Authenticate of [Challenge] to a
-// 401. It panics if err is nil.
+// a [context.DeadlineExceeded] becomes [tyr.KindDeadlineExceeded], a
+// [context.Canceled] becomes [tyr.KindCanceled] if the context of r is
+// canceled too, and any other error, a nil *tyr.Error too,
+// [tyr.KindInternal] with a generic message. An internal error, or one of
+// a kind rest doesn't know, reaches the client as "internal error" only,
+// and WriteError logs it to [slog.Default] with the context of r, with its
+// message, cause and details. WriteError doesn't add the WWW-Authenticate
+// of [Challenge] to a 401. It panics if err is nil.
 func WriteError(w http.ResponseWriter, r *http.Request, err error) {
 	if err == nil {
 		panic("rest: WriteError: nil error")
@@ -45,6 +46,8 @@ func WriteError(w http.ResponseWriter, r *http.Request, err error) {
 		e = tyr.Internal("internal error").WithCause(errors.New("rest: a nil *tyr.Error was written as an error"))
 	case !ok && errors.Is(err, context.DeadlineExceeded):
 		e = tyr.DeadlineExceeded("deadline exceeded").WithCause(err)
+	case !ok && errors.Is(err, context.Canceled) && errors.Is(r.Context().Err(), context.Canceled):
+		e = tyr.Canceled("canceled").WithCause(err)
 	case !ok:
 		e = tyr.Internal("internal error").WithCause(err)
 	}
@@ -107,6 +110,8 @@ func statusOf(k tyr.Kind) int {
 		return http.StatusConflict
 	case tyr.KindResourceExhausted:
 		return http.StatusTooManyRequests
+	case tyr.KindCanceled:
+		return statusClientClosedRequest
 	case tyr.KindUnavailable:
 		return http.StatusServiceUnavailable
 	case tyr.KindDeadlineExceeded:
@@ -122,12 +127,25 @@ func internal(k tyr.Kind) bool {
 	return statusOf(k) == http.StatusInternalServerError
 }
 
+// statusClientClosedRequest is the status of calls that the client
+// canceled, as nginx logs them; net/http has no name for it.
+const statusClientClosedRequest = 499
+
+// statusText returns the title of a problem of status: the reason phrase
+// of the status, or the one nginx has for 499, which net/http doesn't know.
+func statusText(status int) string {
+	if status == statusClientClosedRequest {
+		return "Client Closed Request"
+	}
+	return http.StatusText(status)
+}
+
 // writeProblem sends p as application/problem+json, with the type and the
 // title filled in. Invalid UTF-8, which a message may carry, becomes
 // U+FFFD. Details that can't be encoded are a bug of the server: they're
 // logged to logger and left out.
 func writeProblem(ctx context.Context, logger *slog.Logger, w http.ResponseWriter, p problem) {
-	p.Type, p.Title = "about:blank", http.StatusText(p.Status)
+	p.Type, p.Title = "about:blank", statusText(p.Status)
 	data, err := json.Marshal(p, jsontext.AllowInvalidUTF8(true))
 	if err != nil {
 		// Only details can fail to encode: send the problem without them.
@@ -149,5 +167,5 @@ func writeProblem(ctx context.Context, logger *slog.Logger, w http.ResponseWrite
 // minimalProblem returns the problem of status with only the members that
 // every problem has, written without the JSON encoder.
 func minimalProblem(status int) []byte {
-	return []byte(`{"type":"about:blank","title":"` + http.StatusText(status) + `","status":` + strconv.Itoa(status) + `}`)
+	return []byte(`{"type":"about:blank","title":"` + statusText(status) + `","status":` + strconv.Itoa(status) + `}`)
 }

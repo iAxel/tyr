@@ -233,6 +233,33 @@ func TestWriteError(t *testing.T) {
 }
 
 // Not parallel: it replaces the default logger, which WriteError logs to.
+func TestWriteErrorCanceled(t *testing.T) {
+	var buf bytes.Buffer
+	defer slog.SetDefault(slog.Default())
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
+	err := fmt.Errorf("db: %w", context.Canceled)
+
+	// The client went away: the context of the request is canceled.
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	rec := httptest.NewRecorder()
+	rest.WriteError(rec, httptest.NewRequestWithContext(ctx, "GET", "/", nil), err)
+	if rec.Code != 499 || buf.Len() != 0 {
+		t.Errorf("WriteError() after the client went away = %d, logged %q; want 499 and nothing", rec.Code, buf.Bytes())
+	}
+	golden(t, "write_error_canceled", rec.Body.Bytes())
+
+	// The request is alive, so the cancellation came from elsewhere.
+	rec = httptest.NewRecorder()
+	rest.WriteError(rec, httptest.NewRequest("GET", "/", nil), err)
+	var record map[string]any
+	if rec.Code != http.StatusInternalServerError || json.Unmarshal(buf.Bytes(), &record) != nil ||
+		record["err"] != "internal: internal error: db: context canceled" {
+		t.Errorf("WriteError() in a live request = %d, logged %s; want 500 and the error", rec.Code, buf.Bytes())
+	}
+}
+
+// Not parallel: it replaces the default logger, which WriteError logs to.
 func TestWriteErrorInternalDetails(t *testing.T) {
 	var buf bytes.Buffer
 	defer slog.SetDefault(slog.Default())

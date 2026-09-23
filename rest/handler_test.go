@@ -368,6 +368,7 @@ func TestStatuses(t *testing.T) {
 		{tyr.KindAlreadyExists, http.StatusConflict},
 		{tyr.KindFailedPrecondition, http.StatusConflict},
 		{tyr.KindResourceExhausted, http.StatusTooManyRequests},
+		{tyr.KindCanceled, 499},
 		{tyr.KindDeadlineExceeded, http.StatusGatewayTimeout},
 		{tyr.KindUnavailable, http.StatusServiceUnavailable},
 		{tyr.KindInternal, http.StatusInternalServerError},
@@ -385,6 +386,28 @@ func TestStatuses(t *testing.T) {
 			t.Errorf("%v: status %d, want %d", tt.kind, rec.Code, tt.want)
 		}
 	}
+}
+
+func TestCanceled(t *testing.T) {
+	var buf bytes.Buffer
+	api := tyr.New(tyr.WithLogger(slog.New(slog.NewJSONHandler(&buf, nil))))
+	api.Handle("links.get", func(ctx context.Context, req getLinkReq) (*link, error) {
+		return nil, ctx.Err()
+	}, rest.Route("GET /links/{code}"))
+	mux := http.NewServeMux()
+	rest.Mount(mux, api)
+
+	// The client went away, and the handler stopped with the error of its
+	// context: 499, as nginx has it, rather than 500, and no record.
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequestWithContext(ctx, "GET", "/links/go", nil))
+
+	if rec.Code != 499 || rec.Header().Get("Content-Type") != "application/problem+json" || buf.Len() != 0 {
+		t.Errorf("response = %d %s, logged %q; want 499 problem+json and nothing", rec.Code, rec.Header().Get("Content-Type"), buf.Bytes())
+	}
+	golden(t, "error_canceled", rec.Body.Bytes())
 }
 
 func TestReadError(t *testing.T) {

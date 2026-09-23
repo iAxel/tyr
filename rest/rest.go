@@ -67,6 +67,7 @@
 //   - not_found: 404
 //   - already_exists, failed_precondition: 409
 //   - resource_exhausted: 429
+//   - canceled: 499, which nginx has for a client that went away
 //   - unavailable: 503
 //   - deadline_exceeded: 504
 //   - internal and unknown kinds: 500

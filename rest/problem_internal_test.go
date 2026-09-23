@@ -23,8 +23,8 @@ func TestWriteErrorOfOtherType(t *testing.T) {
 
 func TestMinimalProblem(t *testing.T) {
 	// Written without the encoder, it's what the encoder writes.
-	for _, status := range []int{400, 404, 413, 500, 503, 599} {
-		want, err := json.Marshal(problem{Type: "about:blank", Title: http.StatusText(status), Status: status})
+	for _, status := range []int{400, 404, 413, 499, 500, 503, 599} {
+		want, err := json.Marshal(problem{Type: "about:blank", Title: statusText(status), Status: status})
 		if err != nil {
 			t.Fatal(err)
 		}

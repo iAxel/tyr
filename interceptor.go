@@ -40,7 +40,7 @@ func (a *API) link(ic Interceptor, op *Operation, next Invoker) Invoker {
 	return func(ctx context.Context, req any) (res any, err error) {
 		defer a.recoverCall(ctx, &res, &err)
 		if res, err = ic(ctx, op, req, next); err != nil {
-			return nil, a.resolve(err)
+			return nil, a.resolve(ctx, err)
 		}
 		return res, nil
 	}
