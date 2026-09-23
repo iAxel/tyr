@@ -242,27 +242,54 @@ func newRule(key, param string, t reflect.Type) (rule, error) {
 // comparison says how a rule compares a length or a number with its
 // parameter, and how its violations read.
 type comparison struct {
-	holds        func(c int) bool // of the result of compare
-	chars, items string           // for strings and for collections, with %s the count
-	number       string           // for numbers, with %s the parameter
+	op           operator
+	chars, items string // for strings and for collections, with %s the count
+	number       string // for numbers, with %s the parameter
 }
+
+// operator is how a rule compares a value with its parameter.
+type operator int
+
+const (
+	atLeast operator = iota // >=
+	atMost                  // <=
+	exactly                 // ==
+	above                   // >
+	below                   // <
+)
 
 // comparisonOf returns the comparison of the rule key and reports whether
 // key compares lengths or numbers.
 func comparisonOf(key string) (comparison, bool) {
 	switch key {
 	case "min", "gte":
-		return comparison{func(c int) bool { return c >= 0 }, "must be at least %s", "must have at least %s", "must be at least %s"}, true
+		return comparison{atLeast, "must be at least %s", "must have at least %s", "must be at least %s"}, true
 	case "max", "lte":
-		return comparison{func(c int) bool { return c <= 0 }, "must be at most %s", "must have at most %s", "must be at most %s"}, true
+		return comparison{atMost, "must be at most %s", "must have at most %s", "must be at most %s"}, true
 	case "len":
-		return comparison{func(c int) bool { return c == 0 }, "must be exactly %s", "must have exactly %s", "must be %s"}, true
+		return comparison{exactly, "must be exactly %s", "must have exactly %s", "must be %s"}, true
 	case "gt":
-		return comparison{func(c int) bool { return c > 0 }, "must be more than %s", "must have more than %s", "must be greater than %s"}, true
+		return comparison{above, "must be more than %s", "must have more than %s", "must be greater than %s"}, true
 	case "lt":
-		return comparison{func(c int) bool { return c < 0 }, "must be fewer than %s", "must have fewer than %s", "must be less than %s"}, true
+		return comparison{below, "must be fewer than %s", "must have fewer than %s", "must be less than %s"}, true
 	}
 	return comparison{}, false
+}
+
+// holds reports whether x compares with n as op says, with the operators of
+// Go, as go-playground compares: NaN fails every comparison.
+func holds[T int64 | uint64 | float64](op operator, x, n T) bool {
+	switch op {
+	case atLeast:
+		return x >= n
+	case atMost:
+		return x <= n
+	case exactly:
+		return x == n
+	case above:
+		return x > n
+	}
+	return x < n
 }
 
 // compareRule returns a rule of cmp, which compares the length of a string
@@ -280,11 +307,11 @@ func compareRule(r rule, c comparison, param string, t reflect.Type) (rule, erro
 		if k == reflect.String {
 			r.detail = fmt.Sprintf(c.chars, count(n, "character"))
 			r.check = func(v reflect.Value, _ bool) bool {
-				return c.holds(compare(int64(utf8.RuneCountInString(v.String())), n))
+				return holds(c.op, int64(utf8.RuneCountInString(v.String())), n)
 			}
 		} else {
 			r.detail = fmt.Sprintf(c.items, count(n, "item"))
-			r.check = func(v reflect.Value, _ bool) bool { return c.holds(compare(int64(v.Len()), n)) }
+			r.check = func(v reflect.Value, _ bool) bool { return holds(c.op, int64(v.Len()), n) }
 		}
 	case isInt(k):
 		n, err := parseInt(param, t)
@@ -296,21 +323,21 @@ func compareRule(r rule, c comparison, param string, t reflect.Type) (rule, erro
 			text = time.Duration(n).String()
 		}
 		r.detail = fmt.Sprintf(c.number, text)
-		r.check = func(v reflect.Value, _ bool) bool { return c.holds(compare(v.Int(), n)) }
+		r.check = func(v reflect.Value, _ bool) bool { return holds(c.op, v.Int(), n) }
 	case isUint(k):
 		n, err := strconv.ParseUint(param, 0, 64)
 		if err != nil {
 			return bad(err)
 		}
 		r.detail = fmt.Sprintf(c.number, strconv.FormatUint(n, 10))
-		r.check = func(v reflect.Value, _ bool) bool { return c.holds(compare(v.Uint(), n)) }
+		r.check = func(v reflect.Value, _ bool) bool { return holds(c.op, v.Uint(), n) }
 	case k == reflect.Float32 || k == reflect.Float64:
 		n, err := strconv.ParseFloat(param, t.Bits())
 		if err != nil {
 			return bad(err)
 		}
 		r.detail = fmt.Sprintf(c.number, strconv.FormatFloat(n, 'g', -1, t.Bits()))
-		r.check = func(v reflect.Value, _ bool) bool { return c.holds(compare(v.Float(), n)) }
+		r.check = func(v reflect.Value, _ bool) bool { return holds(c.op, v.Float(), n) }
 	default:
 		return r, fmt.Errorf("rule %q doesn't apply to %v", r.name, t)
 	}
@@ -447,17 +474,6 @@ func count(n int64, unit string) string {
 		return "1 " + unit
 	}
 	return strconv.FormatInt(n, 10) + " " + unit + "s"
-}
-
-// compare is cmp.Compare for the numbers the rules compare.
-func compare[T int64 | uint64 | float64](x, y T) int {
-	switch {
-	case x < y:
-		return -1
-	case x > y:
-		return 1
-	}
-	return 0
 }
 
 func isInt(k reflect.Kind) bool {

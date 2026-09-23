@@ -5,7 +5,10 @@
 // validate/playground module.
 package plantest
 
-import "time"
+import (
+	"math"
+	"time"
+)
 
 // Layouts returns zero values of struct types whose fields json/v2 lays out
 // in each way the plans must follow: flat, embedded, embedded through a
@@ -188,6 +191,19 @@ type Numbers struct {
 	Timeout  time.Duration `json:"timeout" validate:"min=1s"`
 }
 
+// Floats has rules for floats. As go-playground compares with the
+// operators of Go, NaN fails every comparison, and an infinity fails on the
+// side it goes past.
+type Floats struct {
+	Min   float64  `json:"min" validate:"min=0"`
+	Max   float64  `json:"max" validate:"max=10"`
+	Len   float64  `json:"len" validate:"len=1"`
+	Gt    float64  `json:"gt" validate:"gt=0"`
+	Lt    float64  `json:"lt" validate:"lt=10"`
+	Range float32  `json:"range" validate:"min=0,max=10"`
+	Ptr   *float64 `json:"ptr" validate:"omitempty,gte=0,lte=10"`
+}
+
 // Collections has rules for slices, maps and arrays.
 type Collections struct {
 	Tags  []string          `json:"tags" validate:"min=1,max=2"`
@@ -263,6 +279,7 @@ type Formats struct {
 // the core reports for them: for each field, the first rule it fails, in
 // the order of the fields.
 func Checks() []Check {
+	nan, inf := math.NaN(), math.Inf(1)
 	return []Check{
 		{
 			Name: "valid strings",
@@ -339,6 +356,45 @@ func Checks() []Check {
 				{"/hex", "must be at most 16"},
 				{"/one_of", "must be one of: 1, 2, 3"},
 				{"/timeout", "must be at least 1s"},
+			},
+		},
+		{
+			Name:  "valid floats",
+			Value: Floats{Min: 0, Max: 10, Len: 1, Gt: 0.5, Lt: 9.5, Range: 5, Ptr: new(10.0)},
+		},
+		{
+			Name:  "NaN",
+			Value: Floats{Min: nan, Max: nan, Len: nan, Gt: nan, Lt: nan, Range: float32(nan), Ptr: new(nan)},
+			Want: []Violation{
+				{"/min", "must be at least 0"},
+				{"/max", "must be at most 10"},
+				{"/len", "must be 1"},
+				{"/gt", "must be greater than 0"},
+				{"/lt", "must be less than 10"},
+				{"/range", "must be at least 0"},
+				{"/ptr", "must be at least 0"},
+			},
+		},
+		{
+			Name:  "infinity",
+			Value: Floats{Min: inf, Max: inf, Len: inf, Gt: inf, Lt: inf, Range: float32(inf), Ptr: new(inf)},
+			Want: []Violation{
+				{"/max", "must be at most 10"},
+				{"/len", "must be 1"},
+				{"/lt", "must be less than 10"},
+				{"/range", "must be at most 10"},
+				{"/ptr", "must be at most 10"},
+			},
+		},
+		{
+			Name:  "negative infinity",
+			Value: Floats{Min: -inf, Max: -inf, Len: -inf, Gt: -inf, Lt: -inf, Range: float32(-inf), Ptr: new(-inf)},
+			Want: []Violation{
+				{"/min", "must be at least 0"},
+				{"/len", "must be 1"},
+				{"/gt", "must be greater than 0"},
+				{"/range", "must be at least 0"},
+				{"/ptr", "must be at least 0"},
 			},
 		},
 		{
