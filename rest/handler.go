@@ -2,22 +2,19 @@ package rest
 
 import (
 	"context"
-	"encoding"
-	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
 	"maps"
-	"mime"
 	"net/http"
 	"net/url"
 	"reflect"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/iaxel/tyr"
+	"github.com/iaxel/tyr/internal/jsonreq"
 	"github.com/iaxel/tyr/internal/plan"
 )
 
@@ -135,7 +132,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	if len(body) > 0 && !isJSON(r.Header.Get("Content-Type")) {
+	if len(body) > 0 && !jsonreq.IsJSON(r.Header.Get("Content-Type")) {
 		writeProblem(ctx, h.api.Logger(), w, problem{
 			Status: http.StatusUnsupportedMediaType,
 			Detail: "request body must be JSON: application/json or a +json type",
@@ -157,22 +154,12 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.writeResult(ctx, w, res)
 }
 
-// isJSON reports whether contentType is a JSON media type: application/json
-// or a type with the +json suffix, with any parameters.
-func isJSON(contentType string) bool {
-	mediaType, _, err := mime.ParseMediaType(contentType)
-	if err != nil && !errors.Is(err, mime.ErrInvalidMediaParameter) {
-		return false
-	}
-	return mediaType == "application/json" || strings.HasSuffix(mediaType, "+json")
-}
-
 // decode fills in dst, a *Req, from the body and then from the path, the
 // query and the headers.
 func (h *handler) decode(dst any, body []byte, r *http.Request) error {
 	if len(body) > 0 {
-		if err := json.Unmarshal(body, dst); err != nil {
-			return bodyError(err)
+		if err := jsonreq.Unmarshal(body, dst); err != nil {
+			return err
 		}
 	}
 
@@ -196,40 +183,6 @@ func (h *handler) decode(dst any, body []byte, r *http.Request) error {
 		v.Add(p.Field.JSON, fmt.Sprintf("%s %q: %s", p.Field.Source, p.Field.Name, p.Detail))
 	}
 	return v.Err()
-}
-
-// bodyError turns an error decoding the body into a violation: at the value
-// that doesn't fit its field, or at the whole body, with the byte offset,
-// if the JSON is broken.
-func bodyError(err error) error {
-	v := tyr.Violations{{Detail: "invalid JSON"}}
-	if se, ok := errors.AsType[*json.SemanticError](err); ok {
-		v[0] = tyr.Violation{Pointer: string(se.JSONPointer), Detail: describe(se)}
-	} else if se, ok := errors.AsType[*jsontext.SyntacticError](err); ok {
-		v[0].Detail = fmt.Sprintf("invalid JSON at byte offset %d: %v", se.ByteOffset, se.Err)
-	}
-	return v.Err()
-}
-
-// describe says what the value at a semantic error must be. A type that
-// unmarshals itself speaks for itself, in the error its method returned.
-func describe(se *json.SemanticError) string {
-	t := se.GoType
-	if se.Err != nil && t != nil && t != reflect.TypeFor[time.Time]() && ranOwnMethod(t, se.JSONKind) {
-		return se.Err.Error()
-	}
-	return plan.Describe(t)
-}
-
-// ranOwnMethod reports whether decoding a JSON value of kind k into type t
-// calls a method of t: UnmarshalJSON for any value, UnmarshalText only for
-// a string.
-func ranOwnMethod(t reflect.Type, k jsontext.Kind) bool {
-	p := reflect.PointerTo(t)
-	if p.Implements(reflect.TypeFor[json.Unmarshaler]()) || p.Implements(reflect.TypeFor[json.UnmarshalerFrom]()) {
-		return true
-	}
-	return k == '"' && p.Implements(reflect.TypeFor[encoding.TextUnmarshaler]())
 }
 
 // writeResult sends a successful result: the headers its fields set and,
