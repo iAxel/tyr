@@ -3,10 +3,12 @@ package tyr_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"reflect"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/iaxel/tyr"
 	"github.com/iaxel/tyr/ctxkey"
@@ -177,7 +179,7 @@ func TestInterceptorShortCircuit(t *testing.T) {
 		res  any
 		err  error
 	}{
-		{"result", "cached", nil},
+		{"result", &link{Code: "cached"}, nil},
 		{"error", nil, denied},
 	}
 	for _, tt := range tests {
@@ -201,6 +203,80 @@ func TestInterceptorShortCircuit(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestInterceptorResult(t *testing.T) {
+	tests := []struct {
+		name    string
+		call    func(api *tyr.API, ic tyr.Interceptor) *tyr.Operation // registers the operation
+		res     any                                                   // what the interceptor returns
+		wantErr string                                                // the cause of the call's error; "" for none
+	}{
+		{name: "Res", call: withRes[*link], res: &link{Code: "cached"}},
+		{name: "nil for a pointer", call: withRes[*link], res: nil},
+		{name: "nil for a slice", call: withRes[[]string], res: nil},
+		{name: "nil for an interface", call: withRes[fmt.Stringer], res: nil},
+		{name: "a type that implements the interface", call: withRes[fmt.Stringer], res: time.Second},
+		{
+			name:    "another type",
+			call:    withRes[*link],
+			res:     "cached",
+			wantErr: "tyr: an interceptor returned string, want *tyr_test.link",
+		},
+		{
+			name:    "a value for a pointer",
+			call:    withRes[*link],
+			res:     link{Code: "cached"},
+			wantErr: "tyr: an interceptor returned tyr_test.link, want *tyr_test.link",
+		},
+		{
+			name:    "nil for a struct",
+			call:    withRes[link],
+			res:     nil,
+			wantErr: "tyr: an interceptor returned <nil>, want tyr_test.link",
+		},
+		{
+			name:    "a type that doesn't implement the interface",
+			call:    withRes[fmt.Stringer],
+			res:     42,
+			wantErr: "tyr: an interceptor returned int, want fmt.Stringer",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := &recorder{}
+			api := tyr.New(tyr.WithLogger(slog.New(rec)))
+			op := tt.call(api, func(ctx context.Context, op *tyr.Operation, req any, next tyr.Invoker) (any, error) {
+				return tt.res, nil
+			})
+			res, err := op.Call(t.Context(), nil)
+
+			if tt.wantErr == "" {
+				if err != nil || res != tt.res {
+					t.Errorf("Call() = %v, %v; want %v, <nil>", res, err, tt.res)
+				}
+				return
+			}
+			// The transport gets an internal error rather than a result it
+			// can't encode, and the logs get the cause.
+			wantErr := "internal: internal error: " + tt.wantErr
+			if res != nil || err == nil || err.Error() != wantErr {
+				t.Errorf("Call() = %v, %v; want <nil>, %s", res, err, wantErr)
+			}
+			if len(rec.logs) != 1 || rec.logs[0].attrs["err"] != wantErr {
+				t.Errorf("logged %+v, want the error", rec.logs)
+			}
+		})
+	}
+}
+
+// withRes registers an operation with the result type Res, which never runs
+// its handler, behind the interceptor ic.
+func withRes[Res any](api *tyr.API, ic tyr.Interceptor) *tyr.Operation {
+	api.Use(ic)
+	return api.Handle("links.get", func(ctx context.Context, req getLinkReq) (Res, error) {
+		panic("the handler ran")
+	})
 }
 
 func TestInvokerErrors(t *testing.T) {

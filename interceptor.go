@@ -9,8 +9,12 @@ import (
 // authorize, measure or trace calls; see [API.Use]. It gets the operation,
 // to look at its metadata, and the request as a *Req, which it may change,
 // or replace by passing another *Req to next. Passing next anything but a
-// non-nil *Req fails the call with [KindInternal]. An interceptor may also
-// return without calling next.
+// non-nil *Req fails the call with [KindInternal].
+//
+// An interceptor may also return without calling next, e.g. with a cached
+// result. A result must be of the operation's Res type, or nil if Res can
+// be nil, as a pointer can: [Operation.Call] fails with KindInternal
+// rather than pass anything else on to a transport.
 type Interceptor func(ctx context.Context, op *Operation, req any, next Invoker) (any, error)
 
 // An Invoker runs the rest of a call: the interceptors after the current

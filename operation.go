@@ -30,12 +30,14 @@ type Operation struct {
 	decode func(decode func(dst any) error) (any, error) // returns a new *Req
 	handle Invoker                                       // the innermost link: checks the *Req, calls the handler
 	invoke Invoker                                       // the whole chain, built by API.Seal
+	check  func(res any) error                           // checks that the chain returned a Res
 }
 
 // newOperation returns an operation of a that checks requests against
 // validation, if any, and passes them to h.
 func newOperation[Req, Res any](a *API, name string, h Handler[Req, Res], validation *plan.Validation) *Operation {
 	_, validates := any((*Req)(nil)).(Validator)
+	nilable := canBeNil(reflect.TypeFor[Res]())
 	return &Operation{
 		name: name,
 		req:  reflect.TypeFor[Req](),
@@ -74,7 +76,22 @@ func newOperation[Req, Res any](a *API, name string, h Handler[Req, Res], valida
 			}
 			return res, nil
 		},
+		check: func(res any) error {
+			if _, ok := res.(Res); ok || res == nil && nilable {
+				return nil
+			}
+			return fmt.Errorf("tyr: an interceptor returned %T, want %v", res, reflect.TypeFor[Res]())
+		},
 	}
+}
+
+// canBeNil reports whether nil is a value of type t, such as a pointer.
+func canBeNil(t reflect.Type) bool {
+	switch t.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice, reflect.UnsafePointer:
+		return true
+	}
+	return false
 }
 
 // wrongRequest describes what an interceptor passed to next instead of a
@@ -113,6 +130,10 @@ func (op *Operation) Res() reflect.Type {
 // the handler carry the operation; Call adds it to ctx unless ctx already
 // carries it, see [WithOperation] and [OperationFrom].
 //
+// The result Call returns is of the operation's Res type, or nil if Res
+// can be nil, as a pointer can. A result of another type, which only an
+// interceptor can return, fails the call with [KindInternal].
+//
 // The error Call returns is either nil or an *Error. An error that contains
 // an Error is reduced to it; others go through the mappers added by
 // [API.MapError], and those no mapper translates become
@@ -126,6 +147,11 @@ func (op *Operation) Call(ctx context.Context, decode func(dst any) error) (any,
 		ctx = WithOperation(ctx, op)
 	}
 	res, err := op.run(ctx, decode)
+	if err == nil {
+		if wrong := op.check(res); wrong != nil {
+			err = Internal("internal error").WithCause(wrong)
+		}
+	}
 	if err != nil {
 		e := op.api.resolve(err)
 		op.api.logFailure(ctx, e)
