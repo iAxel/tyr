@@ -26,6 +26,7 @@ import (
 
 	"github.com/iaxel/tyr"
 	"github.com/iaxel/tyr/examples/shortlink/authz"
+	"github.com/iaxel/tyr/examples/shortlink/contract"
 	"github.com/iaxel/tyr/examples/shortlink/links"
 	"github.com/iaxel/tyr/examples/shortlink/store"
 	"github.com/iaxel/tyr/jsonrpc"
@@ -84,13 +85,15 @@ func newAPI(svc *links.Service, logger *slog.Logger) *tyr.API {
 		return err // unmapped: the client gets an internal error
 	})
 
-	api.Handle("links.create", svc.Create, rest.Route("POST /links"), rest.Status(http.StatusCreated))
-	api.Handle("links.get", svc.Get, rest.Route("GET /links/{code}"))
-	api.Handle("links.follow", svc.Follow, rest.Route("GET /{code}"), rest.Status(http.StatusFound))
+	// The contract has the names and the routes; the roles are the
+	// server's own business.
+	api.Implement(contract.CreateLink, svc.Create)
+	api.Implement(contract.GetLink, svc.Get)
+	api.Implement(contract.FollowLink, svc.Follow)
 
 	admin := api.Group(authz.Require("admin"))
-	admin.Handle("links.delete", svc.Delete, rest.Route("DELETE /links/{code}"))
-	admin.Handle("links.purge", svc.Purge) // no REST route: JSON-RPC only
+	admin.Implement(contract.DeleteLink, svc.Delete)
+	admin.Implement(contract.PurgeLinks, svc.Purge)
 	return api
 }
 

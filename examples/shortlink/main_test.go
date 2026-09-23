@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"maps"
@@ -14,11 +16,14 @@ import (
 	"sync"
 	"testing"
 	"testing/synctest"
+	"time"
 
 	"github.com/iaxel/tyr"
 	"github.com/iaxel/tyr/examples/shortlink/authz"
+	"github.com/iaxel/tyr/examples/shortlink/contract"
 	"github.com/iaxel/tyr/examples/shortlink/links"
 	"github.com/iaxel/tyr/examples/shortlink/store"
+	"github.com/iaxel/tyr/jsonrpc"
 )
 
 // The tokens of the admin and of a user of the service under test.
@@ -29,8 +34,9 @@ const (
 
 // service is the service under test.
 type service struct {
-	client *http.Client
-	logs   *logs
+	handler http.Handler // of the server, middleware included
+	client  *http.Client // of the test server
+	logs    *logs
 }
 
 // start starts the service on an in-memory test server. It runs in a
@@ -48,7 +54,31 @@ func start(t *testing.T) *service {
 	// Show redirects to the test instead of following them: the client of
 	// the test server sends requests to every host to the service.
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	return &service{client: client, logs: logs}
+	return &service{handler: srv.Handler, client: client, logs: logs}
+}
+
+// rpc returns a client of the service over JSON-RPC, through hc, that
+// sends token as a bearer token, if there is one.
+func rpc(hc *http.Client, token string) *jsonrpc.Client {
+	if token != "" {
+		authed := *hc
+		authed.Transport = bearer{token: token, next: hc.Transport}
+		hc = &authed
+	}
+	return jsonrpc.NewClient("http://shortlink.example/rpc", hc)
+}
+
+// bearer is an http.RoundTripper that sends requests through next with a
+// bearer token, as a client of the service does.
+type bearer struct {
+	token string
+	next  http.RoundTripper
+}
+
+func (b bearer) RoundTrip(r *http.Request) (*http.Response, error) {
+	r = r.Clone(r.Context())
+	r.Header.Set("Authorization", "Bearer "+b.token)
+	return b.next.RoundTrip(r)
 }
 
 // do sends a request, with a JSON body unless body is empty and with the
@@ -291,37 +321,40 @@ func TestLogs(t *testing.T) {
 func TestRPC(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		s := start(t)
+		c := rpc(s.client, "")
+		ctx := t.Context()
 		const link = `{"code":"go-docs","url":"https://go.dev/doc/","created_at":"2000-01-01T00:00:00Z"}`
 
-		// The operations of REST, by name, with the same store.
-		tests := []struct {
-			name string
-			call string
-			want string
-		}{
-			{
-				name: "create",
-				call: `{"jsonrpc":"2.0","method":"links.create","params":{"url":"https://go.dev/doc/","code":"go-docs"},"id":1}`,
-				want: `{"jsonrpc":"2.0","result":` + link + `,"id":1}`,
-			},
-			{
-				// REST redirects to the link, JSON-RPC returns it.
-				name: "follow",
-				call: `{"jsonrpc":"2.0","method":"links.follow","params":{"code":"go-docs"},"id":2}`,
-				want: `{"jsonrpc":"2.0","result":{"url":"https://go.dev/doc/"},"id":2}`,
-			},
-			{
-				name: "batch",
-				call: `[{"jsonrpc":"2.0","method":"links.get","params":{"code":"go-docs"},"id":3},` +
-					`{"jsonrpc":"2.0","method":"links.get","params":{"code":"nope"},"id":4}]`,
-				want: `[{"jsonrpc":"2.0","result":` + link + `,"id":3},` +
-					`{"jsonrpc":"2.0","error":{"code":404,"message":"link not found","data":{"kind":"not_found"}},"id":4}]`,
-			},
+		// The operations of REST, by their contract, with the same store.
+		// Location is a header of REST, which JSON-RPC doesn't send.
+		created, err := c.Call(ctx, contract.CreateLink, contract.CreateReq{URL: "https://go.dev/doc/", Code: "go-docs"})
+		day := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+		if err != nil || created.Code != "go-docs" || created.URL != "https://go.dev/doc/" || !created.CreatedAt.Equal(day) || created.Location != "" {
+			t.Errorf("create = %+v, %v; want go-docs of %v without a Location", created, err, day)
 		}
-		for _, tt := range tests {
-			if resp, body := s.do(t, "POST", "/rpc", tt.call); resp.StatusCode != http.StatusOK || body != tt.want {
-				t.Errorf("%s = %d %s, want 200 %s", tt.name, resp.StatusCode, body, tt.want)
-			}
+		// REST redirects to the link, JSON-RPC returns it.
+		followed, err := c.Call(ctx, contract.FollowLink, contract.GetReq{Code: "go-docs"})
+		if want := (contract.FollowRes{URL: "https://go.dev/doc/"}); followed != want || err != nil {
+			t.Errorf("follow = %+v, %v; want %+v", followed, err, want)
+		}
+		// The errors of the store, translated by MapError, and of validation.
+		_, err = c.Call(ctx, contract.GetLink, contract.GetReq{Code: "nope"})
+		if e, ok := errors.AsType[*tyr.Error](err); !ok || e.Kind != tyr.KindNotFound || e.Message != "link not found" {
+			t.Errorf("get a missing link = %v, want not_found: link not found", err)
+		}
+		_, err = c.Call(ctx, contract.CreateLink, contract.CreateReq{URL: "go.dev"})
+		const violations = `[{"pointer":"/url","detail":"must be an http or https URL"}]`
+		if e, ok := errors.AsType[*tyr.Error](err); !ok || e.Kind != tyr.KindInvalidArgument || fmt.Sprint(e.Details) != violations {
+			t.Errorf("create with an invalid URL = %v, want invalid_argument with %s", err, violations)
+		}
+
+		// A batch, which the client doesn't send.
+		batch := `[{"jsonrpc":"2.0","method":"links.get","params":{"code":"go-docs"},"id":1},` +
+			`{"jsonrpc":"2.0","method":"links.get","params":{"code":"nope"},"id":2}]`
+		want := `[{"jsonrpc":"2.0","result":` + link + `,"id":1},` +
+			`{"jsonrpc":"2.0","error":{"code":404,"message":"link not found","data":{"kind":"not_found"}},"id":2}]`
+		if resp, body := s.do(t, "POST", "/rpc", batch); resp.StatusCode != http.StatusOK || body != want {
+			t.Errorf("batch = %d %s, want 200 %s", resp.StatusCode, body, want)
 		}
 		if resp, body := s.do(t, "GET", "/links/go-docs", ""); resp.StatusCode != http.StatusOK || body != link {
 			t.Errorf("get over REST = %d %s, want 200 %s", resp.StatusCode, body, link)
@@ -332,13 +365,19 @@ func TestRPC(t *testing.T) {
 func TestRPCLogs(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		s := start(t)
-		resp, _ := s.do(t, "POST", "/rpc", `{"jsonrpc":"2.0","method":"links.get","params":{"code":"nope"},"id":1}`)
+		// The client sends the request ID of its context on, and the
+		// service takes it, as a service that calls it would have it.
+		const id = "0192f5e2-7c3a-7b1e-9c4d-2f1a3b5c7d9e"
+		_, err := rpc(s.client, "").Call(tyr.WithRequestID(t.Context(), id), contract.GetLink, contract.GetReq{Code: "nope"})
+		if e, ok := errors.AsType[*tyr.Error](err); !ok || e.Kind != tyr.KindNotFound {
+			t.Errorf("get a missing link = %v, want not_found", err)
+		}
 		synctest.Wait()
 
 		// Every call has the route of the endpoint; the access record has
 		// the operation too, which jsonrpc records.
 		want := []record{{msg: "middleware: request", attrs: map[string]string{
-			"request_id": resp.Header.Get("X-Request-ID"), "method": "POST", "route": "POST /rpc", "operation": "links.get",
+			"request_id": id, "method": "POST", "route": "POST /rpc", "operation": "links.get",
 			"status": "200", "duration": "0s",
 		}}}
 		if got := s.logs.get(); !slices.EqualFunc(got, want, equalRecords) {
@@ -350,42 +389,59 @@ func TestRPCLogs(t *testing.T) {
 func TestPurge(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		s := start(t)
-		for _, body := range []string{
-			`{"url":"https://evil.example/a","code":"evil-a"}`,
-			`{"url":"http://EVIL.example:8080/b","code":"evil-b"}`,
-			`{"url":"https://go.dev","code":"go-dev"}`,
+		for _, req := range []contract.CreateReq{
+			{URL: "https://evil.example/a", Code: "evil-a"},
+			{URL: "http://EVIL.example:8080/b", Code: "evil-b"},
+			{URL: "https://go.dev", Code: "go-dev"},
 		} {
-			if resp, body := s.do(t, "POST", "/links", body); resp.StatusCode != http.StatusCreated {
-				t.Fatalf("create = %d %s", resp.StatusCode, body)
+			if _, err := rpc(s.client, "").Call(t.Context(), contract.CreateLink, req); err != nil {
+				t.Fatalf("create %s: %v", req.Code, err)
 			}
 		}
 
 		// Purge has no REST route: JSON-RPC serves it, and the interceptor
 		// authorizes it as it would over REST.
-		const purge = `{"jsonrpc":"2.0","method":"links.purge","params":{"host":"evil.example"},"id":1}`
+		purge := contract.PurgeReq{Host: "evil.example"}
 		tests := []struct {
-			name  string
-			token string
-			want  string
+			name    string
+			token   string
+			kind    tyr.Kind
+			message string
 		}{
-			{"without a token", "", `{"jsonrpc":"2.0","error":{"code":401,"message":"a valid bearer token is required","data":{"kind":"unauthenticated"}},"id":1}`},
-			{"by a user", userToken, `{"jsonrpc":"2.0","error":{"code":403,"message":"links.purge requires the role admin","data":{"kind":"permission_denied"}},"id":1}`},
-			{"by the admin", adminToken, `{"jsonrpc":"2.0","result":{"purged":2},"id":1}`},
+			{"without a token", "", tyr.KindUnauthenticated, "a valid bearer token is required"},
+			{"by a user", userToken, tyr.KindPermissionDenied, "links.purge requires the role admin"},
 		}
 		for _, tt := range tests {
-			var header []string
-			if tt.token != "" {
-				header = []string{"Authorization", "Bearer " + tt.token}
+			_, err := rpc(s.client, tt.token).Call(t.Context(), contract.PurgeLinks, purge)
+			if e, ok := errors.AsType[*tyr.Error](err); !ok || e.Kind != tt.kind || e.Message != tt.message {
+				t.Errorf("purge %s = %v, want %v: %s", tt.name, err, tt.kind, tt.message)
 			}
-			if resp, body := s.do(t, "POST", "/rpc", purge, header...); resp.StatusCode != http.StatusOK || body != tt.want {
-				t.Errorf("purge %s = %d %s, want 200 %s", tt.name, resp.StatusCode, body, tt.want)
-			}
+		}
+		if res, err := rpc(s.client, adminToken).Call(t.Context(), contract.PurgeLinks, purge); res.Purged != 2 || err != nil {
+			t.Errorf("purge by the admin = %+v, %v; want 2 purged", res, err)
 		}
 
 		for code, status := range map[string]int{"evil-a": http.StatusNotFound, "evil-b": http.StatusNotFound, "go-dev": http.StatusOK} {
 			if resp, body := s.do(t, "GET", "/links/"+code, ""); resp.StatusCode != status {
 				t.Errorf("get %s = %d %s, want %d", code, resp.StatusCode, body, status)
 			}
+		}
+	})
+}
+
+func TestInProcess(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := start(t)
+		// The whole server, without a network: its middleware
+		// authenticates the caller by the header, as it does over one.
+		hc := jsonrpc.InProcess(s.handler)
+		purge := contract.PurgeReq{Host: "evil.example"}
+		_, err := rpc(hc, "").Call(t.Context(), contract.PurgeLinks, purge)
+		if e, ok := errors.AsType[*tyr.Error](err); !ok || e.Kind != tyr.KindUnauthenticated {
+			t.Errorf("purge without a token = %v, want unauthenticated", err)
+		}
+		if res, err := rpc(hc, adminToken).Call(t.Context(), contract.PurgeLinks, purge); res.Purged != 0 || err != nil {
+			t.Errorf("purge by the admin = %+v, %v; want none purged", res, err)
 		}
 	})
 }
