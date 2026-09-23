@@ -1,6 +1,9 @@
-// Package tyr provides typed operations and contracts: a handler is written
-// once as a plain func(ctx, Req) (Res, error), served over REST and JSON-RPC
-// and called from a typed client.
+// Package tyr provides typed operations: a handler is written once as a
+// plain func(ctx, Req) (Res, error), with no HTTP types, and transports
+// serve it, such as REST, see [github.com/iaxel/tyr/rest]. Whatever the
+// transport, a call goes through [Operation.Call]: the request is decoded,
+// passed through the interceptors (see [API.Use]) and validated, and an
+// error of the handler becomes an [Error] of a [Kind].
 //
 // # Validation
 //
