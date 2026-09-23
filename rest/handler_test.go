@@ -438,6 +438,33 @@ func TestEncodingErrorsAreLogged(t *testing.T) {
 	}
 }
 
+// Paging is embedded in requests, with its own binding and validation.
+type Paging struct {
+	Limit int `json:"limit" query:"limit" validate:"max=100"`
+}
+
+func TestEmbeddedAndValidated(t *testing.T) {
+	type listReq struct {
+		Paging
+		Tag string `json:"tag" query:"tag" validate:"required"`
+	}
+	mux := mount(t, func(api *tyr.API) {
+		api.Handle("links.list", func(ctx context.Context, req listReq) (listReq, error) {
+			return req, nil
+		}, rest.Route("GET /links"))
+	})
+
+	if rec := do(mux, "GET", "/links?limit=5&tag=go", "", ""); rec.Code != http.StatusOK || rec.Body.String() != `{"limit":5,"tag":"go"}` {
+		t.Errorf("response = %d %s, want 200 {\"limit\":5,\"tag\":\"go\"}", rec.Code, rec.Body)
+	}
+	// Violations point to the members of the JSON object, as in JSON-RPC.
+	rec := do(mux, "GET", "/links?limit=500", "", "")
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("response = %d, want 400", rec.Code)
+	}
+	golden(t, "bad_request_validate_tags", rec.Body.Bytes())
+}
+
 func TestConcurrentRequests(t *testing.T) {
 	mux := mount(t, echo)
 	var wg sync.WaitGroup

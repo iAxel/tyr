@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/iaxel/tyr"
@@ -36,6 +38,75 @@ type checkedByPointer struct {
 func (r *checkedByPointer) Validate() error {
 	*r.ran = true
 	return nil
+}
+
+// tagged is a request with validate tags whose Validate records that it
+// ran and relies on the tags: URL is set.
+type tagged struct {
+	URL  string `json:"url" validate:"required,url"`
+	Code string `json:"code" validate:"omitempty,min=4"`
+	ran  *bool
+}
+
+func (r tagged) Validate() error {
+	*r.ran = true
+	if strings.HasSuffix(r.URL, ".example") {
+		return errors.New("example URLs aren't allowed")
+	}
+	return nil
+}
+
+func TestValidateTags(t *testing.T) {
+	handled := false
+	op := tyr.New().Handle("links.create", func(ctx context.Context, req tagged) (string, error) {
+		handled = true
+		return "ok", nil
+	})
+
+	t.Run("violations", func(t *testing.T) {
+		ran := false
+		handled = false
+		_, err := op.Call(t.Context(), fill(tagged{Code: "ab", ran: &ran}))
+
+		// In the order of the fields; neither Validate nor the handler runs.
+		want := tyr.Violations{
+			{Pointer: "/url", Detail: "is required"},
+			{Pointer: "/code", Detail: "must be at least 4 characters"},
+		}
+		e, ok := err.(*tyr.Error)
+		if !ok || e.Kind != tyr.KindInvalidArgument || e.Message != "validation failed" {
+			t.Fatalf("Call() error = %v, want invalid_argument: validation failed", err)
+		}
+		if got, _ := e.Details.(tyr.Violations); !slices.Equal(got, want) {
+			t.Errorf("Call() violations = %q, want %q", got, want)
+		}
+		if ran || handled {
+			t.Errorf("Validate ran: %t, handler called: %t; want neither", ran, handled)
+		}
+	})
+	t.Run("valid tags", func(t *testing.T) {
+		ran := false
+		handled = false
+		_, err := op.Call(t.Context(), fill(tagged{URL: "https://links.example", ran: &ran}))
+		if e, ok := err.(*tyr.Error); !ok || e.Message != "example URLs aren't allowed" || !ran || handled {
+			t.Errorf("Call() error = %v, Validate ran: %t, handler called: %t; want Validate's error only", err, ran, handled)
+		}
+	})
+}
+
+func TestHandleBadValidateTag(t *testing.T) {
+	got := panicValue(func() {
+		tyr.New().Handle("links.get", func(ctx context.Context, req struct {
+			Code string `json:"code" validate:"required,maxx=4"`
+		}) (string, error) {
+			return "", nil
+		})
+	})
+	want := `tyr: Handle("links.get"): field Code: validate:"required,maxx=4": unknown rule "maxx"; ` +
+		`add the validate/playground module for more rules, or move the check to Validate()`
+	if got != want {
+		t.Errorf("Handle() panicked with %v, want %q", got, want)
+	}
 }
 
 // fill returns a decode that fills in req, as a transport would.

@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"reflect"
 	"runtime/debug"
+
+	"github.com/iaxel/tyr/internal/plan"
 )
 
 // OpOption configures an operation when it is registered, e.g. with the
@@ -29,8 +31,9 @@ type Operation struct {
 	invoke Invoker                                       // the whole chain, built by API.Seal
 }
 
-// newOperation returns an operation of a that passes requests to h.
-func newOperation[Req, Res any](a *API, name string, h Handler[Req, Res]) *Operation {
+// newOperation returns an operation of a that checks requests against
+// validation, if any, and passes them to h.
+func newOperation[Req, Res any](a *API, name string, h Handler[Req, Res], validation *plan.Validation) *Operation {
 	_, validates := any((*Req)(nil)).(Validator)
 	return &Operation{
 		name: name,
@@ -54,6 +57,11 @@ func newOperation[Req, Res any](a *API, name string, h Handler[Req, Res]) *Opera
 			r, ok := req.(*Req)
 			if !ok || r == nil {
 				return nil, Internal("internal error").WithCause(wrongRequest[Req](req))
+			}
+			if validation != nil {
+				if vs := validation.Validate(reflect.ValueOf(r).Elem()); len(vs) > 0 {
+					return nil, violationsOf(vs).Err()
+				}
 			}
 			if validates {
 				if err := any(r).(Validator).Validate(); err != nil {
@@ -94,9 +102,9 @@ func (op *Operation) Res() reflect.Type {
 }
 
 // Call runs the operation once: it decodes a request, passes it through
-// the interceptors, validates it (see [Validator]), calls the handler and
-// returns the result. Transports call it for every request they serve, and
-// tests may call it directly.
+// the interceptors, validates it by its validate tags and [Validator],
+// calls the handler and returns the result. Transports call it for every
+// request they serve, and tests may call it directly.
 //
 // decode fills in a new request, which it gets as a *Req; a nil decode
 // leaves the request zero. Decode errors that don't contain an [Error] are

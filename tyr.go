@@ -1,6 +1,28 @@
 // Package tyr provides typed operations and contracts: a handler is written
 // once as a plain func(ctx, Req) (Res, error), served over REST and JSON-RPC
 // and called from a typed client.
+//
+// # Validation
+//
+// [Operation.Call] checks a request against the validate tags of its
+// fields, then calls its Validate method if it's a [Validator]:
+//
+//	type CreateReq struct {
+//		URL  string `json:"url" validate:"required,url"`
+//		Code string `json:"code" validate:"omitempty,min=4,max=16"`
+//	}
+//
+// The tags are a subset of those of go-playground/validator, with the same
+// meaning as there with the option WithRequiredStructEnabled: required,
+// omitempty, min, max, len, gt, gte, lt, lte, oneof, email, url and uuid.
+// Strings are measured in runes, slices and maps by length, numbers by
+// value. Nested and embedded structs are checked too, but not the elements
+// of slices and maps.
+//
+// A field fails on its first failing rule, and each failing field adds one
+// [Violation], with the JSON Pointer of the field; the violations come in
+// the order of the fields. An unknown rule, a rule that doesn't apply to
+// the type of its field, or a bad parameter makes [API.Handle] panic.
 package tyr
 
 import (
@@ -11,6 +33,8 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+
+	"github.com/iaxel/tyr/internal/plan"
 )
 
 // Handler is the only shape business logic takes: a plain function of a
@@ -80,11 +104,13 @@ func (a *API) MapError(fn func(error) error) {
 // Handle registers h as an operation with the given name and returns the
 // operation. The name is one or more dot-separated segments of ASCII
 // letters, digits, '_' and '-', such as "links.get"; the first segment
-// can't be "rpc", which JSON-RPC reserves. Req must be a struct type.
+// can't be "rpc", which JSON-RPC reserves. Req must be a struct type, and
+// its validate tags must be valid; see the package documentation.
 //
 // opts configure the operation, e.g. with a route for a transport, and
 // apply in order. Handle panics if the name is invalid or already taken,
-// h or an option is nil, Req isn't a struct, or the API is sealed.
+// h or an option is nil, Req isn't a struct or has an invalid validate
+// tag, or the API is sealed.
 func (a *API) Handle[Req, Res any](name string, h Handler[Req, Res], opts ...OpOption) *Operation {
 	return register(a, name, h, nil, opts)
 }
@@ -180,15 +206,20 @@ func register[Req, Res any](a *API, name string, h Handler[Req, Res], groupOpts,
 	if h == nil {
 		panic("tyr: " + call + ": nil handler")
 	}
-	if t := reflect.TypeFor[Req](); t.Kind() != reflect.Struct {
+	t := reflect.TypeFor[Req]()
+	if t.Kind() != reflect.Struct {
 		msg := fmt.Sprintf("tyr: %s: request type %v is not a struct", call, t)
 		if t.Kind() == reflect.Pointer && t.Elem().Kind() == reflect.Struct {
 			msg += fmt.Sprintf("; use %v", t.Elem())
 		}
 		panic(msg)
 	}
+	validation, err := plan.NewValidation(t)
+	if err != nil {
+		panic("tyr: " + call + ": " + err.Error())
+	}
 
-	op := newOperation(a, name, h)
+	op := newOperation(a, name, h, validation)
 	for _, opt := range slices.Concat(groupOpts, opts) {
 		if opt == nil {
 			panic("tyr: " + call + ": nil option")

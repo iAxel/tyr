@@ -82,8 +82,22 @@ type Pagination struct {
 	Limit int `json:"limit" query:"limit"`
 }
 
-type withEmbedded struct {
+type withNested struct {
+	Page Pagination `json:"page"`
+}
+
+type withIgnored struct {
+	A string `json:"-" query:"a"`
+}
+
+type withShadowed struct {
 	Pagination
+	Limit int `json:"limit"`
+}
+
+type withEmbeddedPointer struct {
+	*Pagination
+	Own string `json:"own" query:"own"`
 }
 
 func TestNewBindingErrors(t *testing.T) {
@@ -165,9 +179,19 @@ func TestNewBindingErrors(t *testing.T) {
 			`field a has query:"a", but it is unexported`,
 		},
 		{
-			"field of an embedded struct",
-			reflect.TypeFor[withEmbedded](),
-			`field Limit has query:"limit", but only fields of plan_test.withEmbedded itself can be bound, not of embedded structs`,
+			"field of a nested struct",
+			reflect.TypeFor[withNested](),
+			`field Page.Limit has query:"limit", but only fields of plan_test.withNested and of structs embedded in it can be bound`,
+		},
+		{
+			"field JSON leaves out",
+			reflect.TypeFor[withIgnored](),
+			`field A has query:"a", but the JSON object of plan_test.withIgnored has no member for it`,
+		},
+		{
+			"field another field hides",
+			reflect.TypeFor[withShadowed](),
+			`field Pagination.Limit has query:"limit", but the JSON object of plan_test.withShadowed has no member for it`,
 		},
 	}
 	for _, tt := range tests {
@@ -274,6 +298,70 @@ func TestBind(t *testing.T) {
 			t.Errorf("Bind() problems = %q", problems)
 		}
 	})
+}
+
+func TestBindEmbedded(t *testing.T) {
+	b, err := plan.NewBinding(reflect.TypeFor[withEmbeddedPointer]())
+	if err != nil {
+		t.Fatalf("NewBinding() error = %v", err)
+	}
+	if got := b.Fields[0]; got.GoName != "Pagination.Limit" || got.JSON != "limit" {
+		t.Errorf("NewBinding().Fields[0] = %s, JSON %s; want Pagination.Limit, JSON limit", got.GoName, got.JSON)
+	}
+
+	bind := func(limit string) (withEmbeddedPointer, int) {
+		var v withEmbeddedPointer
+		problems := b.Bind(reflect.ValueOf(&v).Elem(), func(src plan.Source, name string) ([]string, bool) {
+			return []string{limit}, name == "limit" && limit != ""
+		})
+		return v, len(problems)
+	}
+	// The embedded struct is allocated only for a value that fits.
+	if v, n := bind("5"); v.Pagination == nil || v.Limit != 5 || n != 0 {
+		t.Errorf("Bind(limit=5) = %+v with %d problems, want Limit 5", v.Pagination, n)
+	}
+	if v, n := bind("x"); v.Pagination != nil || n != 1 {
+		t.Errorf("Bind(limit=x) = %+v with %d problems, want nil with 1 problem", v.Pagination, n)
+	}
+	if v, n := bind(""); v.Pagination != nil || n != 0 {
+		t.Errorf("Bind(no limit) = %+v with %d problems, want nil", v.Pagination, n)
+	}
+}
+
+type selfDecoding struct {
+	Code string `json:"code"`
+}
+
+func (s *selfDecoding) UnmarshalJSON([]byte) error { return nil }
+
+type recursive struct {
+	Next *recursive `json:"next"`
+	A    string     `json:"a" query:"a"`
+}
+
+type selfDecodingTagged struct {
+	Code string `json:"code" query:"code"`
+}
+
+func (s *selfDecodingTagged) UnmarshalJSON([]byte) error { return nil }
+
+func TestNewBindingTypes(t *testing.T) {
+	if b, err := plan.NewBinding(reflect.TypeFor[recursive]()); err != nil || len(b.Fields) != 1 {
+		t.Errorf("NewBinding(recursive type) = %v, %v; want one field", b, err)
+	}
+	// A type that decodes itself has no JSON object to bind fields of.
+	_, err := plan.NewBinding(reflect.TypeFor[selfDecodingTagged]())
+	if want := "plan_test.selfDecodingTagged has JSON methods, so its fields aren't members of a JSON object"; err == nil || err.Error() != want {
+		t.Errorf("NewBinding(type with JSON methods) error = %v, want %q", err, want)
+	}
+}
+
+func TestNewBindingWithoutTags(t *testing.T) {
+	// A type without binding tags needs no JSON object, even one with JSON
+	// methods.
+	if b, err := plan.NewBinding(reflect.TypeFor[selfDecoding]()); err != nil || len(b.Fields) != 0 {
+		t.Errorf("NewBinding() = %v, %v; want no fields", b, err)
+	}
 }
 
 func TestDescribe(t *testing.T) {

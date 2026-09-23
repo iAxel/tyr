@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"net/textproto"
 	"reflect"
+	"slices"
 	"strconv"
-	"strings"
 	"time"
 )
 
@@ -50,10 +50,11 @@ func (s Source) String() string {
 type Field struct {
 	Source Source
 	Name   string // the wildcard, the parameter or the header in the tag
-	GoName string // the name of the field in Go
-	JSON   string // the JSON name of the field
+	GoName string // the name of the field in Go, with the embedded structs on the way
+	JSON   string // the name of the field's member in the JSON object
 
-	index int
+	index []int // through embedded structs
+	typ   reflect.Type
 	set   func(v reflect.Value, values []string) (detail string)
 }
 
@@ -75,35 +76,49 @@ type Problem struct {
 // time.Time does, or be a pointer to one of those, which gets a value only
 // when there is one; query fields may also be slices of those types.
 //
+// A bound field must be a member of t's JSON object, as encoding/json/v2
+// sees it, so that a client can set it in JSON too: a field of t or of a
+// struct embedded in it that no other field hides.
+//
 // NewBinding fails on a field of another type, on a tag that names nothing
-// or repeats a name, on a field with more than one tag, and on a tag on an
-// unexported field or on a field of an embedded struct.
+// or repeats a name, on a field with more than one tag, and on a tag on a
+// field that isn't a member of the JSON object.
 func NewBinding(t reflect.Type) (*Binding, error) {
 	b := &Binding{}
+	var ms []member // of t's JSON object, found for the first field to need them
+	var found bool
 	seen := make(map[Source]map[string]string) // name → Go name
-	for _, f := range reflect.VisibleFields(t) {
-		var tagged []Source
+	for _, tf := range taggedFields(t) {
+		f := tf.field
+		var tags []Source
 		for _, src := range [...]Source{Path, Query, Header} {
 			if _, ok := f.Tag.Lookup(src.Tag()); ok {
-				tagged = append(tagged, src)
+				tags = append(tags, src)
 			}
 		}
-		if len(tagged) == 0 {
-			continue
-		}
-
-		src := tagged[0]
+		src := tags[0]
 		name := f.Tag.Get(src.Tag())
 		tag := fmt.Sprintf("%s:%q", src.Tag(), name)
 		switch {
-		case len(tagged) > 1:
-			return nil, fmt.Errorf("field %s has both %s and %s tags", f.Name, tagged[0].Tag(), tagged[1].Tag())
-		case len(f.Index) > 1:
-			return nil, fmt.Errorf("field %s has %s, but only fields of %v itself can be bound, not of embedded structs", f.Name, tag, t)
+		case len(tags) > 1:
+			return nil, fmt.Errorf("field %s has both %s and %s tags", tf.name, tags[0].Tag(), tags[1].Tag())
 		case !f.IsExported():
-			return nil, fmt.Errorf("field %s has %s, but it is unexported", f.Name, tag)
+			return nil, fmt.Errorf("field %s has %s, but it is unexported", tf.name, tag)
+		case tf.nested:
+			return nil, fmt.Errorf("field %s has %s, but only fields of %v and of structs embedded in it can be bound", tf.name, tag, t)
 		case name == "":
-			return nil, fmt.Errorf("field %s has an empty %s tag", f.Name, src.Tag())
+			return nil, fmt.Errorf("field %s has an empty %s tag", tf.name, src.Tag())
+		}
+		if !found {
+			var err error
+			if ms, err = members(t); err != nil {
+				return nil, err
+			}
+			found = true
+		}
+		i := slices.IndexFunc(ms, func(m member) bool { return slices.Equal(m.index, tf.index) })
+		if i < 0 {
+			return nil, fmt.Errorf("field %s has %s, but the JSON object of %v has no member for it", tf.name, tag, t)
 		}
 		if src == Header {
 			name = textproto.CanonicalMIMEHeaderKey(name)
@@ -112,13 +127,13 @@ func NewBinding(t reflect.Type) (*Binding, error) {
 			seen[src] = make(map[string]string)
 		}
 		if other, ok := seen[src][name]; ok {
-			return nil, fmt.Errorf("fields %s and %s both have %s", other, f.Name, tag)
+			return nil, fmt.Errorf("fields %s and %s both have %s", other, tf.name, tag)
 		}
-		seen[src][name] = f.Name
+		seen[src][name] = tf.name
 
 		set := setter(f.Type, src == Query)
 		if set == nil {
-			msg := fmt.Sprintf("field %s has %s, but its type %v can't be bound", f.Name, tag, f.Type)
+			msg := fmt.Sprintf("field %s has %s, but its type %v can't be bound", tf.name, tag, f.Type)
 			if f.Type.Kind() == reflect.Slice && setter(f.Type, true) != nil {
 				msg += ": slices can be bound only from the query"
 			}
@@ -127,20 +142,67 @@ func NewBinding(t reflect.Type) (*Binding, error) {
 		b.Fields = append(b.Fields, Field{
 			Source: src,
 			Name:   name,
-			GoName: f.Name,
-			JSON:   jsonName(f),
-			index:  f.Index[0],
+			GoName: tf.name,
+			JSON:   ms[i].name,
+			index:  tf.index,
+			typ:    f.Type,
 			set:    set,
 		})
 	}
 	return b, nil
 }
 
+// taggedField is a field with a binding tag.
+type taggedField struct {
+	field  reflect.StructField
+	name   string // the Go name, with the structs on the way
+	index  []int
+	nested bool // a field of a nested, not embedded, struct is on the way
+}
+
+// taggedFields returns the fields of the struct type t with a binding tag,
+// at any depth: in t and in the structs embedded or nested in it.
+func taggedFields(t reflect.Type) []taggedField {
+	var out []taggedField
+	var walk func(t reflect.Type, name string, index []int, nested bool, seen map[reflect.Type]bool)
+	walk = func(t reflect.Type, name string, index []int, nested bool, seen map[reflect.Type]bool) {
+		if seen[t] {
+			return // a recursive type
+		}
+		seen[t] = true
+		defer delete(seen, t)
+		for i := range t.NumField() {
+			sf := t.Field(i)
+			path := sf.Name
+			if name != "" {
+				path = name + "." + sf.Name
+			}
+			index := append(slices.Clip(index), i)
+			for _, src := range [...]Source{Path, Query, Header} {
+				if _, ok := sf.Tag.Lookup(src.Tag()); ok {
+					out = append(out, taggedField{field: sf, name: path, index: index, nested: nested})
+					break
+				}
+			}
+			ft := sf.Type
+			if ft.Kind() == reflect.Pointer {
+				ft = ft.Elem()
+			}
+			if ft.Kind() == reflect.Struct && !ft.ConvertibleTo(reflect.TypeFor[time.Time]()) {
+				walk(ft, path, index, nested || !sf.Anonymous, seen)
+			}
+		}
+	}
+	walk(t, "", nil, false, make(map[reflect.Type]bool))
+	return out
+}
+
 // Bind sets the bound fields of v, a struct of the binding's type, from the
 // values that get returns for a source and a name. get reports false for a
 // missing value, which leaves its field unchanged; a field that isn't a
-// slice gets the first value. Bind returns a problem for every value that
-// doesn't fit its field.
+// slice gets the first value. A value that fits is set, allocating nil
+// embedded structs on the way to its field. Bind returns a problem for
+// every value that doesn't fit its field.
 func (b *Binding) Bind(v reflect.Value, get func(src Source, name string) ([]string, bool)) []Problem {
 	var problems []Problem
 	for i := range b.Fields {
@@ -149,9 +211,13 @@ func (b *Binding) Bind(v reflect.Value, get func(src Source, name string) ([]str
 		if !ok {
 			continue
 		}
-		if detail := f.set(v.Field(f.index), values); detail != "" {
+		x := reflect.New(f.typ).Elem()
+		if detail := f.set(x, values); detail != "" {
 			problems = append(problems, Problem{Field: f, Detail: detail})
+			continue
 		}
+		dst, _ := fieldByIndex(v, f.index, true)
+		dst.Set(x)
 	}
 	return problems
 }
@@ -295,14 +361,4 @@ func scalar(t reflect.Type) func(v reflect.Value, s string) string {
 		}
 	}
 	return nil
-}
-
-// jsonName returns the name of f in JSON: the name in its json tag, or its
-// Go name.
-func jsonName(f reflect.StructField) string {
-	name, _, _ := strings.Cut(f.Tag.Get("json"), ",")
-	if name == "" || name == "-" {
-		return f.Name
-	}
-	return name
 }
