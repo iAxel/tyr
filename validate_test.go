@@ -251,6 +251,168 @@ func TestValidateReceivers(t *testing.T) {
 	})
 }
 
+// paging, sorting and filter are embedded in requests, each with a Validate
+// method of its own.
+type paging struct {
+	Limit int `json:"limit"`
+}
+
+func (paging) Validate() error { return errors.New("paging") }
+
+type sorting struct {
+	By string `json:"by"`
+}
+
+func (*sorting) Validate() error { return errors.New("sorting") }
+
+type filter struct {
+	Q string `json:"q"`
+}
+
+func (filter) Validate() error { return errors.New("filter") }
+
+// page embeds two structs with Validate, so it has none.
+type page struct {
+	paging
+	sorting
+}
+
+// pagedReq embeds one struct with Validate, which becomes its own.
+type pagedReq struct{ paging }
+
+// pagedSortedReq embeds two, so it has none.
+type pagedSortedReq struct {
+	paging
+	sorting
+}
+
+// pagedPointerReq embeds one of the two through a pointer.
+type pagedPointerReq struct {
+	*paging
+	sorting
+}
+
+// nestedPageReq embeds a struct that has none.
+type nestedPageReq struct{ page }
+
+// threeReq embeds three.
+type threeReq struct {
+	paging
+	sorting
+	filter
+}
+
+// ownValidateReq embeds two but has a Validate of its own.
+type ownValidateReq struct {
+	paging
+	sorting
+}
+
+func (ownValidateReq) Validate() error { return errors.New("own") }
+
+// boolValidate and stringValidate have Validate methods of other
+// signatures, so neither is a Validator.
+type (
+	boolValidate struct {
+		Strict bool `json:"strict"`
+	}
+	stringValidate struct {
+		Note string `json:"note"`
+	}
+)
+
+func (boolValidate) Validate() bool     { return true }
+func (stringValidate) Validate() string { return "" }
+
+// They do have Validate methods, of other signatures.
+var (
+	_ interface{ Validate() bool }   = boolValidate{}
+	_ interface{ Validate() string } = stringValidate{}
+)
+
+// notValidatorsReq embeds both: their Validate methods conflict, but Call
+// wouldn't call them anyway.
+type notValidatorsReq struct {
+	boolValidate
+	stringValidate
+}
+
+// checkedPagingReq embeds paging and checked, a request that validates
+// itself.
+type checkedPagingReq struct {
+	paging
+	checked
+}
+
+func TestHandleConflictingValidate(t *testing.T) {
+	const hint = ", whose Validate methods conflict, so none of them is called; give %[1]s a Validate method of its own that calls theirs"
+	tests := []struct {
+		name     string
+		register func(api *tyr.API) *tyr.Operation
+		want     string // what Handle panics with, or "" if it doesn't
+		wantErr  string // the message of the call's error, from Validate, if Handle doesn't panic
+	}{
+		{name: "one", register: handleReq[pagedReq], wantErr: "paging"},
+		{name: "its own", register: handleReq[ownValidateReq], wantErr: "own"},
+		{name: "no Validator among them", register: handleReq[notValidatorsReq]},
+		{
+			name:     "two",
+			register: handleReq[pagedSortedReq],
+			want:     fmt.Sprintf("request type %[1]s embeds paging and sorting"+hint, "tyr_test.pagedSortedReq"),
+		},
+		{
+			name:     "through a pointer",
+			register: handleReq[pagedPointerReq],
+			want:     fmt.Sprintf("request type %[1]s embeds paging and sorting"+hint, "tyr_test.pagedPointerReq"),
+		},
+		{
+			name:     "in an embedded struct",
+			register: handleReq[nestedPageReq],
+			want:     fmt.Sprintf("request type %[1]s embeds page, which embeds paging and sorting"+hint, "tyr_test.nestedPageReq"),
+		},
+		{
+			name:     "three",
+			register: handleReq[threeReq],
+			want:     fmt.Sprintf("request type %[1]s embeds paging, sorting and filter"+hint, "tyr_test.threeReq"),
+		},
+		{
+			name:     "with a request that validates itself",
+			register: handleReq[checkedPagingReq],
+			want:     fmt.Sprintf("request type %[1]s embeds paging and checked"+hint, "tyr_test.checkedPagingReq"),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var op *tyr.Operation
+			got := panicValue(func() { op = tt.register(tyr.New()) })
+			if tt.want != "" {
+				if want := `tyr: Handle("links.list"): ` + tt.want; got != want {
+					t.Errorf("Handle() panicked with %v, want %q", got, want)
+				}
+				return
+			}
+			if got != nil {
+				t.Fatalf("Handle() panicked with %v", got)
+			}
+			_, err := op.Call(t.Context(), nil)
+			var msg string // of the error of Validate
+			if e, ok := errors.AsType[*tyr.Error](err); ok {
+				msg = e.Message
+			}
+			if msg != tt.wantErr {
+				t.Errorf("Call() error = %v, want the error %q of Validate", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// handleReq registers an operation with the request type Req.
+func handleReq[Req any](api *tyr.API) *tyr.Operation {
+	return api.Handle("links.list", func(ctx context.Context, req Req) (string, error) {
+		return "ok", nil
+	})
+}
+
 func TestValidateAfterInterceptors(t *testing.T) {
 	handler := func(ctx context.Context, req checked) (string, error) { return "ok", nil }
 

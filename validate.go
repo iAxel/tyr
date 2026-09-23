@@ -2,6 +2,9 @@ package tyr
 
 import (
 	"errors"
+	"fmt"
+	"reflect"
+	"strings"
 
 	"github.com/iaxel/tyr/internal/plan"
 )
@@ -16,6 +19,11 @@ import (
 // pointer receiver, and it isn't called for nested structs. Call calls it
 // only for a request that passed the checks of its validate tags, so
 // Validate may rely on them, e.g. on a required field being set.
+//
+// A Validate of a struct that Req embeds is Req's own, as Go promotes it.
+// Of two structs embedded at the same depth that both have one, Go promotes
+// neither, so [API.Handle] panics rather than skip their checks, unless Req
+// has a Validate of its own, which may call theirs.
 //
 // An error of Validate that contains an [Error], such as one from
 // [Violations.Err], is used as is.
@@ -34,6 +42,72 @@ func violationsOf(vs []plan.Violation) Violations {
 		v[i] = Violation{Pointer: x.Pointer, Detail: x.Detail}
 	}
 	return v
+}
+
+// conflictingValidate describes how the Validate methods of structs that
+// the struct type t embeds conflict, so that Go promotes none of them to t
+// and Call would skip their checks. It returns "" if they don't conflict or
+// t has a Validate method of its own.
+func conflictingValidate(t reflect.Type) string {
+	path, names := validateConflict(t, map[reflect.Type]bool{})
+	if len(names) == 0 {
+		return ""
+	}
+	var embeds strings.Builder
+	for _, name := range path {
+		embeds.WriteString(name)
+		embeds.WriteString(", which embeds ")
+	}
+	embeds.WriteString(strings.Join(names[:len(names)-1], ", "))
+	embeds.WriteString(" and ")
+	embeds.WriteString(names[len(names)-1])
+	return fmt.Sprintf("request type %v embeds %s, whose Validate methods conflict, so none of them is called; "+
+		"give %v a Validate method of its own that calls theirs", t, &embeds, t)
+}
+
+// validateConflict returns the names of the structs embedded in the struct
+// type t, or in the structs embedded in it on path, whose Validate methods
+// conflict. names is empty if t has a Validate method or no two of the
+// structs that it embeds at one depth have one.
+func validateConflict(t reflect.Type, seen map[reflect.Type]bool) (path, names []string) {
+	if _, ok := reflect.PointerTo(t).MethodByName("Validate"); ok || seen[t] {
+		return nil, nil
+	}
+	seen[t] = true
+	var validator bool              // whether one of names implements Validator
+	var inner []reflect.StructField // embedded structs without a Validate method
+	for f := range t.Fields() {
+		if !f.Anonymous {
+			continue
+		}
+		ft := f.Type
+		if ft.Kind() == reflect.Pointer {
+			ft = ft.Elem()
+		}
+		methods := ft // an interface has the methods of its own type
+		if ft.Kind() != reflect.Interface {
+			methods = reflect.PointerTo(ft)
+		}
+		if _, ok := methods.MethodByName("Validate"); ok {
+			names = append(names, f.Name)
+			validator = validator || methods.Implements(reflect.TypeFor[Validator]())
+		} else if ft.Kind() == reflect.Struct {
+			f.Type = ft
+			inner = append(inner, f)
+		}
+	}
+	if len(names) > 1 {
+		if !validator {
+			return nil, nil // no Validate that Call would call is lost
+		}
+		return nil, names
+	}
+	for _, f := range inner {
+		if p, n := validateConflict(f.Type, seen); len(n) > 0 {
+			return append([]string{f.Name}, p...), n
+		}
+	}
+	return nil, nil
 }
 
 // validationError turns an error of Validate into an Error, as described

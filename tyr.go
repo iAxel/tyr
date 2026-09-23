@@ -116,7 +116,8 @@ func (a *API) MapError(fn func(error) error) {
 // opts configure the operation, e.g. with a route for a transport, and
 // apply in order. Handle panics if the name is invalid or already taken,
 // h or an option is nil, Req isn't a struct or has an invalid validate
-// tag, or the API is sealed.
+// tag, Req has no Validate method because those of structs it embeds
+// conflict (see [Validator]), or the API is sealed.
 func (a *API) Handle[Req, Res any](name string, h Handler[Req, Res], opts ...OpOption) *Operation {
 	return register(a, name, h, nil, opts)
 }
@@ -223,6 +224,9 @@ func register[Req, Res any](a *API, name string, h Handler[Req, Res], groupOpts,
 	validation, err := plan.NewValidation(t)
 	if err != nil {
 		panic("tyr: " + call + ": " + err.Error())
+	}
+	if conflict := conflictingValidate(t); conflict != "" {
+		panic("tyr: " + call + ": " + conflict)
 	}
 
 	op := newOperation(a, name, h, validation)
