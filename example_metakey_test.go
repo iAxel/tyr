@@ -25,7 +25,7 @@ func requireRoles(r ...string) tyr.OpOption {
 
 // authorize enforces the roles that operations require.
 func authorize(ctx context.Context, op *tyr.Operation, req any, next tyr.Invoker) (any, error) {
-	if want, ok := roles.From(op); ok {
+	if want, ok := roles.Get(op); ok {
 		if role, _ := userRole.Get(ctx); !slices.Contains(want, role) {
 			return nil, tyr.PermissionDenied("requires one of %v", want)
 		}

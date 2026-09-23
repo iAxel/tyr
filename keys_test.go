@@ -7,6 +7,16 @@ import (
 	"github.com/iaxel/tyr"
 )
 
+func TestRequestID(t *testing.T) {
+	if id, ok := tyr.RequestIDFrom(t.Context()); id != "" || ok {
+		t.Errorf("RequestIDFrom(context without an ID) = %q, %t; want \"\", false", id, ok)
+	}
+	ctx := tyr.WithRequestID(t.Context(), "req-1")
+	if id, ok := tyr.RequestIDFrom(ctx); id != "req-1" || !ok {
+		t.Errorf("RequestIDFrom(WithRequestID(ctx, %q)) = %q, %t; want %[1]q, true", "req-1", id, ok)
+	}
+}
+
 func TestOperationFrom(t *testing.T) {
 	if op, ok := tyr.OperationFrom(t.Context()); op != nil || ok {
 		t.Errorf("OperationFrom(context without an operation) = %v, %t; want <nil>, false", op, ok)

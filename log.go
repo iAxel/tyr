@@ -8,8 +8,9 @@ import (
 
 // NewLogHandler returns a handler that adds the request ID and the name of
 // the operation from a record's context to the record, as "request_id" and
-// "operation", and passes the record to next. Values missing from the
-// context are left out. Code logs as usual, with the context:
+// "operation", and passes the record to next; see [RequestIDFrom] and
+// [OperationFrom]. Values missing from the context are left out. Code logs
+// as usual, with the context:
 //
 //	slog.InfoContext(ctx, "link created", "code", code)
 //
@@ -66,7 +67,7 @@ func (h *logHandler) WithGroup(name string) slog.Handler {
 
 func (h *logHandler) Handle(ctx context.Context, r slog.Record) error {
 	var top []slog.Attr
-	if id, ok := RequestIDKey.Get(ctx); ok {
+	if id, ok := RequestIDFrom(ctx); ok {
 		top = append(top, slog.String("request_id", id))
 	}
 	if op, ok := OperationFrom(ctx); ok {

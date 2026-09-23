@@ -201,7 +201,7 @@ func TestWriteError(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			buf.Reset()
 			req := httptest.NewRequest("GET", "/", nil)
-			req = req.WithContext(tyr.RequestIDKey.Set(req.Context(), "req-1"))
+			req = req.WithContext(tyr.WithRequestID(req.Context(), "req-1"))
 			rec := httptest.NewRecorder()
 			rest.WriteError(rec, req, tt.err)
 

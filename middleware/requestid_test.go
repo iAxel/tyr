@@ -37,7 +37,7 @@ func TestRequestID(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			var id, early string
 			h := middleware.RequestID()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				id, _ = tyr.RequestIDKey.Get(r.Context())
+				id, _ = tyr.RequestIDFrom(r.Context())
 				early = w.Header().Get("X-Request-ID")
 			}))
 			req := httptest.NewRequest("GET", "/", nil)
@@ -67,7 +67,7 @@ func TestRequestID(t *testing.T) {
 func TestRequestIDGenerated(t *testing.T) {
 	var ids []string
 	h := middleware.RequestID()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		id, _ := tyr.RequestIDKey.Get(r.Context())
+		id, _ := tyr.RequestIDFrom(r.Context())
 		ids = append(ids, id)
 	}))
 	for range 2 {

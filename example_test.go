@@ -26,7 +26,7 @@ func ExampleNewLogHandler() {
 		logger.WithGroup("db").InfoContext(ctx, "query", "rows", 1)
 		return "https://go.dev", nil
 	})
-	_, _ = get.Call(tyr.RequestIDKey.Set(context.Background(), "0192f5e2"), nil)
+	_, _ = get.Call(tyr.WithRequestID(context.Background(), "0192f5e2"), nil)
 	// Output:
 	// {"level":"INFO","msg":"link found","request_id":"0192f5e2","operation":"links.get","code":"go"}
 	// {"level":"INFO","msg":"query","request_id":"0192f5e2","operation":"links.get","db":{"rows":1}}

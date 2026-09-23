@@ -48,7 +48,7 @@ func logInCall(t *testing.T, log func(ctx context.Context, l *slog.Logger)) stri
 		log(ctx, l)
 		return nil, nil
 	})
-	if _, err := op.Call(tyr.RequestIDKey.Set(t.Context(), "req-1"), nil); err != nil {
+	if _, err := op.Call(tyr.WithRequestID(t.Context(), "req-1"), nil); err != nil {
 		t.Fatalf("Call() error = %v", err)
 	}
 	return buf.String()
@@ -115,7 +115,7 @@ func TestLogHandlerMissingValues(t *testing.T) {
 	l := slog.New(tyr.NewLogHandler(slog.NewJSONHandler(&buf, noTime)))
 
 	l.InfoContext(t.Context(), "no values")
-	l.InfoContext(tyr.RequestIDKey.Set(t.Context(), "req-1"), "request ID only")
+	l.InfoContext(tyr.WithRequestID(t.Context(), "req-1"), "request ID only")
 	op := tyr.New().Handle("links.get", func(ctx context.Context, req getLinkReq) (*link, error) {
 		l.InfoContext(ctx, "operation only")
 		return nil, nil
@@ -170,7 +170,7 @@ func TestLogHandlerCoreRecords(t *testing.T) {
 		panic("boom")
 	})
 
-	ctx := tyr.RequestIDKey.Set(t.Context(), "req-1")
+	ctx := tyr.WithRequestID(t.Context(), "req-1")
 	for _, op := range []*tyr.Operation{failing, panicking} {
 		buf.Reset()
 		_, _ = op.Call(ctx, nil)

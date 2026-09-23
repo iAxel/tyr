@@ -70,7 +70,7 @@ func newHandler(api *tyr.API, op *tyr.Operation, pattern string, m *mount) *hand
 	if h.noBody = plan.NoMembers(res); h.noBody {
 		h.status = http.StatusNoContent
 	}
-	if status, ok := statusKey.From(op); ok {
+	if status, ok := statusKey.Get(op); ok {
 		switch {
 		case isRedirect(status) && !headers.Has("Location"):
 			panicf(op, "Status(%d) is a redirect, but %v has no field with header:%q", status, res, "Location")
@@ -81,7 +81,7 @@ func newHandler(api *tyr.API, op *tyr.Operation, pattern string, m *mount) *hand
 		}
 		h.status = status
 	}
-	if limit, ok := limitKey.From(op); ok {
+	if limit, ok := limitKey.Get(op); ok {
 		h.limit = limit
 	}
 	return h

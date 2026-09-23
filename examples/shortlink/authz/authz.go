@@ -67,7 +67,7 @@ func Require(role string) tyr.OpOption {
 // Interceptor rejects a call of an operation that requires a role unless
 // the caller has it.
 func Interceptor(ctx context.Context, op *tyr.Operation, req any, next tyr.Invoker) (any, error) {
-	role, ok := roleKey.From(op)
+	role, ok := roleKey.Get(op)
 	if !ok {
 		return next(ctx, req)
 	}

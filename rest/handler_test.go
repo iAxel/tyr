@@ -416,7 +416,7 @@ func TestEncodingErrorsAreLogged(t *testing.T) {
 	for _, tt := range tests {
 		buf.Reset()
 		req := httptest.NewRequest("GET", tt.target, nil)
-		req = req.WithContext(tyr.RequestIDKey.Set(req.Context(), "req-1"))
+		req = req.WithContext(tyr.WithRequestID(req.Context(), "req-1"))
 		mux.ServeHTTP(httptest.NewRecorder(), req)
 
 		// The API's logger gets the record, with the request's context and

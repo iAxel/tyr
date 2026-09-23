@@ -5,11 +5,11 @@ import "fmt"
 // MetaKey is a key for typed metadata of operations, such as the roles
 // allowed to call them. Options made by [MetaKey.Option] set it when an
 // operation is registered, and interceptors and transports read it with
-// [MetaKey.From].
+// [MetaKey.Get].
 //
 // A MetaKey is identified by its pointer: every call to [NewMetaKey]
 // returns a distinct key, so keys from different packages never collide,
-// even when they share a name and a type. Option and From panic on a nil
+// even when they share a name and a type. Option and Get panic on a nil
 // *MetaKey.
 type MetaKey[T any] struct {
 	// name is only for String and panic messages. It also gives MetaKey a
@@ -46,12 +46,12 @@ func (k *MetaKey[T]) Option(v T) OpOption {
 	}
 }
 
-// From returns the value an option of k set for op and reports whether
-// such an option was applied. This differs from ctxkey, where a nil value
-// of an interface type T is indistinguishable from a missing one: From
-// reports true for a nil value that an option set. The value is shared by
-// all calls of op and must not be changed.
-func (k *MetaKey[T]) From(op *Operation) (T, bool) {
+// Get returns the value an option of k set for op and reports whether such
+// an option was applied. This differs from ctxkey, where a nil value of an
+// interface type T is indistinguishable from a missing one: Get reports
+// true for a nil value that an option set. The value is shared by all calls
+// of op and must not be changed.
+func (k *MetaKey[T]) Get(op *Operation) (T, bool) {
 	k.nilCheck()
 	v, ok := op.meta[k]
 	if !ok {

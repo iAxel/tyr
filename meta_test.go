@@ -12,17 +12,17 @@ import (
 	"github.com/iaxel/tyr"
 )
 
-func TestMetaKeyFrom(t *testing.T) {
+func TestMetaKeyGet(t *testing.T) {
 	key := tyr.NewMetaKey[[]string]("authz.roles")
 	api := tyr.New()
 	without := api.Handle("links.get", getLink)
 	with := api.Handle("links.purge", getLink, key.Option([]string{"admin"}))
 
-	if got, ok := key.From(without); got != nil || ok {
-		t.Errorf("From(operation without the option) = %v, %t; want <nil>, false", got, ok)
+	if got, ok := key.Get(without); got != nil || ok {
+		t.Errorf("Get(operation without the option) = %v, %t; want <nil>, false", got, ok)
 	}
-	if got, ok := key.From(with); !ok || !slices.Equal(got, []string{"admin"}) {
-		t.Errorf("From(operation with the option) = %v, %t; want [admin], true", got, ok)
+	if got, ok := key.Get(with); !ok || !slices.Equal(got, []string{"admin"}) {
+		t.Errorf("Get(operation with the option) = %v, %t; want [admin], true", got, ok)
 	}
 }
 
@@ -42,8 +42,8 @@ func TestMetaKeyLastWins(t *testing.T) {
 		{api.Handle("levels.twice", getLink, key.Option("first"), key.Option("second")), "second"},
 	}
 	for _, tt := range tests {
-		if got, ok := key.From(tt.op); !ok || got != tt.want {
-			t.Errorf("From(%s) = %q, %t; want %q, true", tt.op.Name(), got, ok, tt.want)
+		if got, ok := key.Get(tt.op); !ok || got != tt.want {
+			t.Errorf("Get(%s) = %q, %t; want %q, true", tt.op.Name(), got, ok, tt.want)
 		}
 	}
 }
@@ -54,14 +54,14 @@ func TestMetaKeyIdentity(t *testing.T) {
 	sameNameInt := tyr.NewMetaKey[int]("key")
 	op := tyr.New().Handle("links.get", getLink, key.Option("value"))
 
-	if got, ok := key.From(op); !ok || got != "value" {
-		t.Errorf("From() = %q, %t; want %q, true", got, ok, "value")
+	if got, ok := key.Get(op); !ok || got != "value" {
+		t.Errorf("Get() = %q, %t; want %q, true", got, ok, "value")
 	}
-	if got, ok := sameName.From(op); ok {
-		t.Errorf("From() with another key of the same name and type = %q, true; want false", got)
+	if got, ok := sameName.Get(op); ok {
+		t.Errorf("Get() with another key of the same name and type = %q, true; want false", got)
 	}
-	if got, ok := sameNameInt.From(op); ok {
-		t.Errorf("From() with another key of the same name = %d, true; want false", got)
+	if got, ok := sameNameInt.Get(op); ok {
+		t.Errorf("Get() with another key of the same name = %d, true; want false", got)
 	}
 }
 
@@ -70,15 +70,15 @@ func TestMetaKeyNilValue(t *testing.T) {
 		key := tyr.NewMetaKey[error]("err")
 		op := tyr.New().Handle("links.get", getLink, key.Option(nil))
 		// Unlike with ctxkey, a nil value that an option set is found.
-		if got, ok := key.From(op); got != nil || !ok {
-			t.Errorf("From() = %v, %t; want <nil>, true", got, ok)
+		if got, ok := key.Get(op); got != nil || !ok {
+			t.Errorf("Get() = %v, %t; want <nil>, true", got, ok)
 		}
 	})
 	t.Run("nil pointer", func(t *testing.T) {
 		key := tyr.NewMetaKey[*int]("ptr")
 		op := tyr.New().Handle("links.get", getLink, key.Option(nil))
-		if got, ok := key.From(op); got != nil || !ok {
-			t.Errorf("From() = %v, %t; want <nil>, true", got, ok)
+		if got, ok := key.Get(op); got != nil || !ok {
+			t.Errorf("Get() = %v, %t; want <nil>, true", got, ok)
 		}
 	})
 }
@@ -98,7 +98,7 @@ func TestNilMetaKey(t *testing.T) {
 		call func()
 	}{
 		{"Option", func() { _ = key.Option("value") }},
-		{"From", func() { _, _ = key.From(op) }},
+		{"Get", func() { _, _ = key.Get(op) }},
 	}
 	for _, tt := range tests {
 		if got, want := panicValue(tt.call), "tyr: nil MetaKey"; got != want {
@@ -116,7 +116,7 @@ func TestMetaKeyLateWrite(t *testing.T) {
 		if got := panicValue(func() { key.Option([]string{"admin"})(op) }); got != want {
 			t.Errorf("applying an option to a registered operation panicked with %v, want %q", got, want)
 		}
-		if _, ok := key.From(op); ok {
+		if _, ok := key.Get(op); ok {
 			t.Error("the late option set the key")
 		}
 	})
@@ -144,7 +144,7 @@ func TestMetaKeyConcurrent(t *testing.T) {
 	key := tyr.NewMetaKey[[]string]("authz.roles")
 	api := tyr.New()
 	api.Use(func(ctx context.Context, op *tyr.Operation, req any, next tyr.Invoker) (any, error) {
-		if roles, ok := key.From(op); !ok || !slices.Equal(roles, []string{"admin"}) {
+		if roles, ok := key.Get(op); !ok || !slices.Equal(roles, []string{"admin"}) {
 			return nil, errors.New("no roles")
 		}
 		return next(ctx, req)

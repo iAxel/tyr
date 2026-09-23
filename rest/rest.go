@@ -111,7 +111,7 @@ func Route(pattern string) tyr.OpOption {
 // RouteOf returns the pattern that [Route] set for op and reports whether
 // op has one.
 func RouteOf(op *tyr.Operation) (pattern string, ok bool) {
-	return routeKey.From(op)
+	return routeKey.Get(op)
 }
 
 // Status sets the status of a successful response, which is 200 by default

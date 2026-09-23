@@ -6,13 +6,26 @@ import (
 	"github.com/iaxel/tyr/ctxkey"
 )
 
-// RequestIDKey carries the ID of the request a context belongs to.
-// Middleware of a transport sets it, and [NewLogHandler] adds it to log
-// records.
-var RequestIDKey = ctxkey.New[string]("request_id")
+// requestIDKey carries the ID of the request a context belongs to; see
+// RequestIDFrom.
+var requestIDKey = ctxkey.New[string]("request_id")
 
 // operationKey carries the operation a call runs; see OperationFrom.
 var operationKey = ctxkey.New[*Operation]("operation")
+
+// RequestIDFrom returns the ID of the request ctx belongs to, which
+// middleware of a transport sets with [WithRequestID].
+func RequestIDFrom(ctx context.Context) (string, bool) {
+	return requestIDKey.Get(ctx)
+}
+
+// WithRequestID returns a derived context that carries id as the ID of its
+// request, as [RequestIDFrom] reads it and [NewLogHandler] adds it to log
+// records. Middleware of a transport sets it, such as
+// [github.com/iaxel/tyr/middleware.RequestID].
+func WithRequestID(ctx context.Context, id string) context.Context {
+	return requestIDKey.Set(ctx, id)
+}
 
 // OperationFrom returns the operation whose call ctx belongs to.
 // [Operation.Call] puts it in the context it passes to the handler.

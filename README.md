@@ -87,7 +87,7 @@ Interceptors run around every operation, over every transport, so authorization 
 var roleKey = tyr.NewMetaKey[string]("role")
 
 api.Use(func(ctx context.Context, op *tyr.Operation, req any, next tyr.Invoker) (any, error) {
-	if role, ok := roleKey.From(op); ok && !hasRole(ctx, role) {
+	if role, ok := roleKey.Get(op); ok && !hasRole(ctx, role) {
 		return nil, tyr.PermissionDenied("%s requires the role %s", op.Name(), role)
 	}
 	return next(ctx, req)
