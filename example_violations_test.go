@@ -15,8 +15,8 @@ type CreateLinkReq struct {
 
 var codeRe = regexp.MustCompile(`^[a-z0-9-]+$`)
 
-// Validate holds rules that struct tags can't express: cross-field checks,
-// regular expressions, lookups.
+// Validate holds rules that struct tags can't express: cross-field checks
+// and regular expressions.
 func (r CreateLinkReq) Validate() error {
 	var v tyr.Violations
 	if r.Code != "" && !codeRe.MatchString(r.Code) {

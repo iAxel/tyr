@@ -31,6 +31,7 @@ type Operation struct {
 
 // newOperation returns an operation of a that passes requests to h.
 func newOperation[Req, Res any](a *API, name string, h Handler[Req, Res]) *Operation {
+	_, validates := any((*Req)(nil)).(Validator)
 	return &Operation{
 		name: name,
 		req:  reflect.TypeFor[Req](),
@@ -53,6 +54,11 @@ func newOperation[Req, Res any](a *API, name string, h Handler[Req, Res]) *Opera
 			r, ok := req.(*Req)
 			if !ok || r == nil {
 				return nil, Internal("internal error").WithCause(wrongRequest[Req](req))
+			}
+			if validates {
+				if err := any(r).(Validator).Validate(); err != nil {
+					return nil, a.validationError(err)
+				}
 			}
 			if res, err = h(ctx, *r); err != nil {
 				return nil, a.resolve(err)
@@ -88,8 +94,9 @@ func (op *Operation) Res() reflect.Type {
 }
 
 // Call runs the operation once: it decodes a request, passes it through
-// the interceptors to the handler and returns the result. Transports call
-// it for every request they serve, and tests may call it directly.
+// the interceptors, validates it (see [Validator]), calls the handler and
+// returns the result. Transports call it for every request they serve, and
+// tests may call it directly.
 //
 // decode fills in a new request, which it gets as a *Req; a nil decode
 // leaves the request zero. Decode errors that don't contain an [Error] are

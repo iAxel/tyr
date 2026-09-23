@@ -93,15 +93,19 @@ type Error struct {
 	origin *Error // the error With* was called on to make this copy; see Is
 }
 
-// Error formats e for logs as "kind: message: cause", omitting empty parts.
-// Clients never see it: transports send only Kind, Message and Details.
+// Error formats e for logs as "kind: message: cause", omitting empty parts
+// and a cause whose text repeats the message; the cause is still there for
+// [errors.Is] and [errors.As]. Clients never see it: transports send only
+// Kind, Message and Details.
 func (e *Error) Error() string {
 	s := e.Kind.String()
 	if e.Message != "" {
 		s += ": " + e.Message
 	}
 	if e.cause != nil {
-		s += ": " + e.cause.Error()
+		if c := e.cause.Error(); c != e.Message {
+			s += ": " + c
+		}
 	}
 	return s
 }

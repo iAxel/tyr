@@ -95,6 +95,7 @@ func TestErrorError(t *testing.T) {
 		{"message", tyr.NotFound("link not found"), "not_found: link not found"},
 		{"cause", tyr.NotFound("").WithCause(cause), "not_found: store: not found"},
 		{"message and cause", tyr.NotFound("link not found").WithCause(cause), "not_found: link not found: store: not found"},
+		{"cause repeating the message", tyr.NotFound("store: not found").WithCause(cause), "not_found: store: not found"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -117,6 +118,12 @@ func TestErrorUnwrap(t *testing.T) {
 	}
 	if !errors.Is(err, cause) {
 		t.Errorf("errors.Is(err, cause) = false, want true")
+	}
+
+	// A cause that Error leaves out for repeating the message is still there.
+	err = tyr.NotFound("store: not found").WithCause(cause)
+	if got := err.Unwrap(); got != cause || !errors.Is(err, cause) {
+		t.Errorf("Unwrap() = %v, want %v, also for errors.Is", got, cause)
 	}
 }
 
