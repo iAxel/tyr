@@ -17,10 +17,12 @@ type OpOption func(*Operation)
 // its name, and interceptors get it to look at its metadata. An operation
 // is read-only once registered.
 type Operation struct {
-	name string
-	req  reflect.Type
-	res  reflect.Type
-	api  *API
+	name       string
+	req        reflect.Type
+	res        reflect.Type
+	api        *API
+	meta       map[any]any // set by MetaKey options, keyed by *MetaKey
+	registered bool        // once set, the operation is read-only
 
 	decode func(decode func(dst any) error) (any, error) // returns a new *Req
 	handle Invoker                                       // the innermost link: checks the *Req, calls the handler

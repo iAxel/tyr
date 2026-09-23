@@ -192,6 +192,7 @@ func register[Req, Res any](a *API, name string, h Handler[Req, Res], groupOpts,
 		}
 		opt(op)
 	}
+	op.registered = true
 	a.names[name] = true
 	a.ops = append(a.ops, op)
 	return op
