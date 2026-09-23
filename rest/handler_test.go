@@ -186,6 +186,13 @@ func TestBadRequests(t *testing.T) {
 		},
 		{name: "path param", target: "/pages/first"},
 		{name: "param out of range", target: "/owners/ann/things?limit=99999999999999999999"},
+		{
+			// The body can't carry these, so the path, the query and
+			// headers can't either.
+			name:   "invalid UTF-8",
+			target: "/owners/%FF/things?tag=%FE",
+			header: []string{"X-Priority", "\xff"},
+		},
 		{name: "broken JSON", target: "/things", body: `{"code": "go",}`},
 		{name: "value of a wrong type", target: "/things", body: `{"items": [{"count": "many"}]}`},
 		{name: "array for an object", target: "/things", body: `[1, 2]`},

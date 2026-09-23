@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strconv"
 	"time"
+	"unicode/utf8"
 )
 
 // Source is where the value of a bound field comes from.
@@ -206,13 +207,18 @@ func taggedFields(t reflect.Type) []taggedField {
 // missing value, which leaves its field unchanged; a field that isn't a
 // slice gets the first value. A value that fits is set, allocating nil
 // embedded structs on the way to its field. Bind returns a problem for
-// every value that doesn't fit its field.
+// every field whose values don't fit it or aren't valid UTF-8, as JSON
+// strings are.
 func (b *Binding) Bind(v reflect.Value, get func(src Source, name string) ([]string, bool)) []Problem {
 	var problems []Problem
 	for i := range b.Fields {
 		f := &b.Fields[i]
 		values, ok := get(f.Source, f.Name)
 		if !ok {
+			continue
+		}
+		if slices.ContainsFunc(values, func(s string) bool { return !utf8.ValidString(s) }) {
+			problems = append(problems, Problem{Field: f, Detail: "must be valid UTF-8"})
 			continue
 		}
 		x := reflect.New(f.typ).Elem()

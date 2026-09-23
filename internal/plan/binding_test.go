@@ -293,6 +293,30 @@ func TestBind(t *testing.T) {
 		}
 	})
 
+	t.Run("invalid UTF-8", func(t *testing.T) {
+		// As in JSON strings, from every source and for every type.
+		got, problems := bind(map[string][]string{
+			"query:str":     {"\xff"},
+			"query:int":     {"\xff"},
+			"query:ints":    {"1", "\xfe"},
+			"path:path":     {"a\xffb"},
+			"header:X-Head": {"\xc3"},
+		})
+		want := []string{
+			"Str: must be valid UTF-8",
+			"Int: must be valid UTF-8",
+			"Ints: must be valid UTF-8",
+			"Path: must be valid UTF-8",
+			"Head: must be valid UTF-8",
+		}
+		if !slices.Equal(problems, want) {
+			t.Errorf("Bind() problems =\n%q\nwant\n%q", problems, want)
+		}
+		if got.Str != "unchanged" || got.Ints != nil || got.Path != "" || got.Head != "" {
+			t.Errorf("Bind() changed fields with invalid values: %+v", got)
+		}
+	})
+
 	t.Run("unsigned range", func(t *testing.T) {
 		if _, problems := bind(map[string][]string{"query:uint8": {"256"}}); !slices.Equal(problems, []string{"Uint8: must be an integer from 0 to 255"}) {
 			t.Errorf("Bind() problems = %q", problems)
