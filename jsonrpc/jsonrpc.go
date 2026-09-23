@@ -1,6 +1,7 @@
 // Package jsonrpc serves the operations of a [tyr.API] over JSON-RPC 2.0,
-// at a single HTTP endpoint. The method of a call is the name of an
-// operation, and its params are the operation's request, by name:
+// at a single HTTP endpoint, and calls them with a typed [Client]. The
+// method of a call is the name of an operation, and its params are the
+// operation's request, by name:
 //
 //	mux.Handle("POST /rpc", jsonrpc.Handler(api))
 //
@@ -72,6 +73,15 @@
 // For middleware above it, such as an access log, the handler records the
 // route and the operation of a single call in the [tyr.RequestInfo] of the
 // request, if there is one; a batch records no operation.
+//
+// # Client
+//
+// [Client] calls operations by their contracts, which [tyr.Define] makes
+// and the server shares with its clients, and turns the error of an
+// operation back into a [tyr.Error] of its kind:
+//
+//	c := jsonrpc.NewClient("http://links.internal/rpc", &http.Client{Timeout: 5 * time.Second})
+//	link, err := c.Call(ctx, contract.GetLink, contract.GetLinkReq{Code: "go"})
 package jsonrpc
 
 import (
