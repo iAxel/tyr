@@ -157,6 +157,54 @@ func TestCallErrors(t *testing.T) {
 	}
 }
 
+func TestCallNilError(t *testing.T) {
+	var nilErr *tyr.Error
+	const fromNil = "internal: internal error: tyr: a nil *tyr.Error was returned as an error"
+
+	tests := []struct {
+		name  string
+		setup func(api *tyr.API) tyr.Handler[getLinkReq, *link]
+		want  string // the error of the call
+	}{
+		{
+			name: "from the handler",
+			setup: func(api *tyr.API) tyr.Handler[getLinkReq, *link] {
+				return func(ctx context.Context, req getLinkReq) (*link, error) { return nil, nilErr }
+			},
+			want: fromNil,
+		},
+		{
+			name: "from an interceptor",
+			setup: func(api *tyr.API) tyr.Handler[getLinkReq, *link] {
+				api.Use(func(ctx context.Context, op *tyr.Operation, req any, next tyr.Invoker) (any, error) {
+					return nil, nilErr
+				})
+				return getLink
+			},
+			want: fromNil,
+		},
+		{
+			name: "from a mapper, which is skipped",
+			setup: func(api *tyr.API) tyr.Handler[getLinkReq, *link] {
+				api.MapError(func(error) error { return nilErr })
+				return func(ctx context.Context, req getLinkReq) (*link, error) {
+					return nil, errors.New("db: connection refused")
+				}
+			},
+			want: "internal: internal error: db: connection refused",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			api := tyr.New(tyr.WithLogger(slog.New(slog.DiscardHandler)))
+			op := api.Handle("links.get", tt.setup(api))
+			if _, err := op.Call(t.Context(), nil); err == nil || err.Error() != tt.want {
+				t.Errorf("Call() error = %v, want %s", err, tt.want)
+			}
+		})
+	}
+}
+
 func TestCallPanics(t *testing.T) {
 	errBoom := errors.New("boom")
 
@@ -306,6 +354,7 @@ func TestCallLoggingDefault(t *testing.T) {
 
 func TestCallConcurrent(t *testing.T) {
 	api := tyr.New()
+	api.Use(passThrough)
 	op := api.Handle("links.get", getLink)
 	api.Seal()
 

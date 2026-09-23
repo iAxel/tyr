@@ -42,6 +42,44 @@ func ExampleOperation_Call() {
 	// <nil> not_found: link not found: store: not found
 }
 
+func ExampleAPI_Use() {
+	type GetLinkReq struct {
+		Code string `json:"code"`
+	}
+
+	// logCalls reports the outcome of every call; a real one would log it
+	// or record a metric.
+	logCalls := func(ctx context.Context, op *tyr.Operation, req any, next tyr.Invoker) (any, error) {
+		res, err := next(ctx, req)
+		kind := "ok"
+		if e, ok := errors.AsType[*tyr.Error](err); ok {
+			kind = e.Kind.String()
+		}
+		fmt.Println(op.Name(), kind)
+		return res, err
+	}
+
+	api := tyr.New()
+	api.Use(logCalls) // the first interceptor is the outermost
+	get := api.Handle("links.get", func(ctx context.Context, req GetLinkReq) (string, error) {
+		if req.Code != "go" {
+			return "", tyr.NotFound("link not found")
+		}
+		return "https://go.dev", nil
+	})
+	api.Seal() // as a transport does when it mounts the API
+
+	for _, code := range []string{"go", "rust"} {
+		_, _ = get.Call(context.Background(), func(dst any) error {
+			dst.(*GetLinkReq).Code = code
+			return nil
+		})
+	}
+	// Output:
+	// links.get ok
+	// links.get not_found
+}
+
 func ExampleError_WithCause() {
 	errStore := errors.New("store: not found") // a domain error
 

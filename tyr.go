@@ -23,22 +23,28 @@ type Handler[Req, Res any] = func(ctx context.Context, req Req) (Res, error)
 // Configure an API from a single goroutine before serving it. Once sealed,
 // it is read-only, and its operations may be called concurrently.
 type API struct {
-	ops     []*Operation
-	names   map[string]bool
-	mappers []func(error) error
-	log     *slog.Logger
-	sealed  bool
+	ops          []*Operation
+	names        map[string]bool
+	mappers      []func(error) error
+	interceptors []Interceptor
+	log          *slog.Logger
+	sealed       bool
 }
 
 // Option configures an [API] created by [New].
 type Option func(*API)
 
-// WithLogger sets the logger for failed calls that need attention: internal
-// errors and panics are logged at the error level, exceeded deadlines and
-// unavailable services at the warning level, unless the caller canceled the
-// call. Records are logged with the call's context, which carries the
-// operation; see [OperationFrom]. By default, the API logs to
-// [slog.Default] as it is at the time of logging.
+// WithLogger sets the logger for failed calls that need attention.
+//
+// A panic is logged at the error level with its stack as soon as it is
+// recovered, even if an interceptor then turns the call into a success.
+// Other errors are logged once, for the call's final result: internal
+// errors at the error level, exceeded deadlines and unavailable services at
+// the warning level, unless the caller canceled the call.
+//
+// Records are logged with the call's context, which carries the operation;
+// see [OperationFrom]. By default, the API logs to [slog.Default] as it is
+// at the time of logging.
 func WithLogger(l *slog.Logger) Option {
 	return func(a *API) { a.log = l }
 }
@@ -95,12 +101,35 @@ func (a *API) Operations() iter.Seq[*Operation] {
 	return slices.Values(a.ops)
 }
 
-// Seal marks the API as complete: registering operations or error mappers
-// after it panics. Transports seal the API when they mount it, so that an
-// operation registered too late fails at startup instead of being silently
-// left out. Sealing a sealed API does nothing.
+// Use adds interceptors that run around the handler of every operation, in
+// the order they are added: the first is the outermost, like the first
+// middleware in middleware.Chain, and later ones go inside earlier ones.
+// An interceptor meant for some operations only looks at their metadata.
+// Use panics if an interceptor is nil or the API is sealed.
+func (a *API) Use(ics ...Interceptor) {
+	a.checkOpen("Use")
+	for _, ic := range ics {
+		if ic == nil {
+			panic("tyr: Use: nil interceptor")
+		}
+	}
+	a.interceptors = append(a.interceptors, ics...)
+}
+
+// Seal marks the API as complete: registering operations, interceptors or
+// error mappers after it panics. Transports seal the API when they mount
+// it, so that an operation registered too late fails at startup instead of
+// being silently left out. Seal also builds the chain of interceptors of
+// every operation once, instead of on every call. Sealing a sealed API does
+// nothing.
 func (a *API) Seal() {
+	if a.sealed {
+		return
+	}
 	a.sealed = true
+	for _, op := range a.ops {
+		op.invoke = a.chain(op)
+	}
 }
 
 // checkOpen panics if a is sealed; call names the offending call.

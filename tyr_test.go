@@ -141,6 +141,11 @@ func TestHandlePanics(t *testing.T) {
 			register: func(api *tyr.API) { api.MapError(nil) },
 			want:     "tyr: MapError: nil mapper",
 		},
+		{
+			name:     "nil interceptor",
+			register: func(api *tyr.API) { api.Use(passThrough, nil) },
+			want:     "tyr: Use: nil interceptor",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -201,6 +206,7 @@ func TestSeal(t *testing.T) {
 		{"Handle", func() { api.Handle("links.late", getLink) }, `tyr: Handle("links.late")` + after},
 		{"Group.Handle", func() { api.Group().Handle("links.late", getLink) }, `tyr: Handle("links.late")` + after},
 		{"MapError", func() { api.MapError(func(err error) error { return err }) }, "tyr: MapError" + after},
+		{"Use", func() { api.Use(passThrough) }, "tyr: Use" + after},
 	}
 	for _, tt := range tests {
 		if got := panicValue(tt.call); got != tt.want {
