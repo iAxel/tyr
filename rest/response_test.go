@@ -320,6 +320,20 @@ func TestProblemHandler(t *testing.T) {
 	}
 }
 
+func BenchmarkProblemHandler(b *testing.B) {
+	// The route allocates nothing: the difference between the mux and
+	// ProblemHandler is what ProblemHandler costs a request of a route, the
+	// second lookup.
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /links/{code}", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	h := rest.ProblemHandler(mux)
+	b.Run("mux, route", func(b *testing.B) { benchmarkServe(b, mux, "GET", "/links/go", "") })
+	b.Run("ProblemHandler, route", func(b *testing.B) { benchmarkServe(b, h, "GET", "/links/go", "") })
+	b.Run("ProblemHandler, no route", func(b *testing.B) { benchmarkServe(b, h, "GET", "/nowhere", "") })
+}
+
 // equalHeader reports whether the headers a and b are equal.
 func equalHeader(a, b http.Header) bool {
 	if len(a) != len(b) {

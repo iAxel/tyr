@@ -498,3 +498,91 @@ func TestConcurrentRequests(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func BenchmarkServeHTTP(b *testing.B) {
+	// The handlers allocate nothing: what's measured is rest's own.
+	goLink := &link{Code: "go", URL: "https://go.dev/go"}
+	links := []*link{goLink}
+	get := func(ctx context.Context, req getLinkReq) (*link, error) { return goLink, nil }
+	api := newAPI()
+	api.Handle("links.get", get, rest.Route("GET /links/{code}"))
+	api.Handle("links.list", func(ctx context.Context, req struct {
+		Owner string `json:"owner" path:"owner"`
+		Limit int    `json:"limit" query:"limit" validate:"omitempty,max=100"`
+		Tag   string `json:"tag" query:"tag"`
+		Prio  int    `json:"prio" header:"X-Priority"`
+	}) ([]*link, error) {
+		return links, nil
+	}, rest.Route("GET /owners/{owner}/links"))
+	api.Handle("links.create", func(ctx context.Context, req struct {
+		URL  string `json:"url" validate:"required,http_url"`
+		Code string `json:"code" validate:"omitempty,min=4,max=16"`
+	}) (*link, error) {
+		return goLink, nil
+	}, rest.Route("POST /links"), rest.Status(http.StatusCreated))
+	mux := http.NewServeMux()
+	rest.Mount(mux, api)
+	// links.get by hand, with net/http alone: what rest adds is the
+	// difference.
+	mux.HandleFunc("GET /by-hand/{code}", func(w http.ResponseWriter, r *http.Request) {
+		res, _ := get(r.Context(), getLinkReq{Code: r.PathValue("code")})
+		data, _ := json.Marshal(res)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(data)
+	})
+
+	tests := []struct {
+		name, method, target, body string
+		header                     []string
+	}{
+		{name: "by hand", method: "GET", target: "/by-hand/go"},
+		{name: "path", method: "GET", target: "/links/go"},
+		{name: "path, query and header", method: "GET", target: "/owners/ann/links?limit=5&tag=go", header: []string{"X-Priority", "3"}},
+		{name: "JSON body", method: "POST", target: "/links", body: `{"url":"https://go.dev","code":"gopher"}`},
+	}
+	for _, tt := range tests {
+		b.Run(tt.name, func(b *testing.B) {
+			benchmarkServe(b, mux, tt.method, tt.target, tt.body, tt.header...)
+		})
+	}
+}
+
+// benchmarkServe serves a request to h over and over. It gives every
+// response a cleared header, as net/http gives a new one, and a writer that
+// drops the body, so that the handler is what's measured. header holds
+// pairs of header names and values.
+func benchmarkServe(b *testing.B, h http.Handler, method, target, body string, header ...string) {
+	req := httptest.NewRequest(method, target, nil)
+	r := bodyReader{strings.NewReader(body)}
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+		req.Body, req.ContentLength = r, int64(len(body))
+	}
+	for i := 0; i+1 < len(header); i += 2 {
+		req.Header.Set(header[i], header[i+1])
+	}
+	w := &discard{header: make(http.Header)}
+	b.ReportAllocs()
+	for b.Loop() {
+		clear(w.header)
+		r.Reset(body)
+		h.ServeHTTP(w, req)
+	}
+}
+
+// discard is a ResponseWriter that drops the body.
+type discard struct {
+	header http.Header
+}
+
+func (d *discard) Header() http.Header         { return d.header }
+func (d *discard) Write(b []byte) (int, error) { return len(b), nil }
+func (d *discard) WriteHeader(int)             {}
+
+// bodyReader is a request body that can be read again after Reset.
+type bodyReader struct {
+	*strings.Reader
+}
+
+func (bodyReader) Close() error { return nil }

@@ -133,3 +133,45 @@ func serve(t *testing.T, h http.Handler) (*http.Client, *logs) {
 	srv.Config.ErrorLog = slog.NewLogLogger(errs, slog.LevelError)
 	return srv.Client(), errs
 }
+
+func BenchmarkChain(b *testing.B) {
+	// The handler and the logger do nothing: what's measured is the
+	// middleware's own.
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	l := slog.New(slog.DiscardHandler)
+	chain := middleware.Chain(h, middleware.RequestID(), middleware.Logger(l), middleware.Recover(l))
+	tests := []struct {
+		name string
+		h    http.Handler
+		id   string // the X-Request-ID of the request
+	}{
+		{"handler", h, ""},
+		{"RequestID, Logger and Recover, incoming ID", chain, "req-1"},
+		{"RequestID, Logger and Recover, new ID", chain, ""},
+	}
+	for _, tt := range tests {
+		b.Run(tt.name, func(b *testing.B) {
+			req := httptest.NewRequest("GET", "/", nil)
+			if tt.id != "" {
+				req.Header.Set("X-Request-ID", tt.id)
+			}
+			w := &discard{header: make(http.Header)}
+			b.ReportAllocs()
+			for b.Loop() {
+				clear(w.header) // net/http gives every response a new one
+				tt.h.ServeHTTP(w, req)
+			}
+		})
+	}
+}
+
+// discard is a ResponseWriter that drops the body.
+type discard struct {
+	header http.Header
+}
+
+func (d *discard) Header() http.Header         { return d.header }
+func (d *discard) Write(b []byte) (int, error) { return len(b), nil }
+func (d *discard) WriteHeader(int)             {}

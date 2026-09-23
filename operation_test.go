@@ -412,6 +412,28 @@ func TestCallConcurrent(t *testing.T) {
 	wg.Wait()
 }
 
+func BenchmarkCall(b *testing.B) {
+	// The handler allocates nothing: what's measured is Call's own.
+	goLink := &link{Code: "go", URL: "https://go.dev/go"}
+	for _, n := range []int{0, 3} {
+		b.Run(fmt.Sprintf("%d interceptors", n), func(b *testing.B) {
+			api := tyr.New()
+			for range n {
+				api.Use(passThrough)
+			}
+			op := api.Handle("links.get", func(ctx context.Context, req getLinkReq) (*link, error) {
+				return goLink, nil
+			})
+			api.Seal()
+			ctx, decode := b.Context(), decodeTo(getLinkReq{Code: "go"})
+			b.ReportAllocs()
+			for b.Loop() {
+				_, _ = op.Call(ctx, decode)
+			}
+		})
+	}
+}
+
 // recorder is a slog.Handler that keeps what it logs.
 type recorder struct {
 	logs []logged
