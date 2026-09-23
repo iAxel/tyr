@@ -76,9 +76,8 @@ func (k Kind) MarshalText() ([]byte, error) {
 }
 
 // Error is an error meant for the client: a [Kind], a message and optional
-// details. A handler may return any error, but other errors reach the client
-// only as [KindInternal] with a generic message, unless they are mapped to
-// an *Error.
+// details. A handler may return other errors too; [Operation.Call] turns
+// them into an Error, by default of [KindInternal] with a generic message.
 //
 // [Error.WithCause] and [Error.WithDetails] return copies, so an *Error can
 // be shared, e.g. as a package-level variable, and [errors.Is] still matches

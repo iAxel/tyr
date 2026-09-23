@@ -1,11 +1,46 @@
 package tyr_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
 	"github.com/iaxel/tyr"
 )
+
+func ExampleOperation_Call() {
+	type GetLinkReq struct {
+		Code string `json:"code"`
+	}
+	errNotFound := errors.New("store: not found") // a domain error
+
+	api := tyr.New()
+	api.MapError(func(err error) error {
+		if errors.Is(err, errNotFound) {
+			return tyr.NotFound("link not found").WithCause(err)
+		}
+		return err
+	})
+	get := api.Handle("links.get", func(ctx context.Context, req GetLinkReq) (string, error) {
+		if req.Code != "go" {
+			return "", errNotFound
+		}
+		return "https://go.dev", nil
+	})
+
+	// Transports pass a decode for their wire format; this one fills in the
+	// request directly, as a test would.
+	for _, code := range []string{"go", "rust"} {
+		url, err := get.Call(context.Background(), func(dst any) error {
+			dst.(*GetLinkReq).Code = code
+			return nil
+		})
+		fmt.Println(url, err)
+	}
+	// Output:
+	// https://go.dev <nil>
+	// <nil> not_found: link not found: store: not found
+}
 
 func ExampleError_WithCause() {
 	errStore := errors.New("store: not found") // a domain error
