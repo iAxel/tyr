@@ -4,6 +4,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/iaxel/tyr"
 	"github.com/iaxel/tyr/examples/shortlink/store"
 )
 
@@ -20,10 +21,11 @@ func TestCreateTakenRandomCode(t *testing.T) {
 	}
 
 	// Every random code is taken: the client didn't choose it, so the
-	// error isn't the conflict of ErrExists, which MapError would report.
+	// error is an internal one, which MapError doesn't turn into the
+	// conflict of ErrExists, with ErrExists as its cause for the logs.
 	tries = 0
 	_, err := s.Create(ctx, CreateReq{URL: "https://go.dev"})
-	if err == nil || errors.Is(err, store.ErrExists) || tries != 3 {
-		t.Errorf("Create() error = %v after %d tries, want an error other than ErrExists after 3", err, tries)
+	if e, ok := errors.AsType[*tyr.Error](err); !ok || e.Kind != tyr.KindInternal || !errors.Is(err, store.ErrExists) || tries != 3 {
+		t.Errorf("Create() error = %v after %d tries, want an internal error caused by ErrExists after 3", err, tries)
 	}
 }

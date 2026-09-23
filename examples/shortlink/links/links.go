@@ -6,7 +6,6 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/url"
 	"regexp"
@@ -102,9 +101,11 @@ func (s *Service) Create(ctx context.Context, req CreateReq) (Created, error) {
 			}
 		}
 		if errors.Is(err, store.ErrExists) {
-			// Not wrapped: the client didn't choose the code, so this is
-			// no conflict of its making, but an internal error.
-			err = fmt.Errorf("links: no free random code: %v", err)
+			// The client didn't choose the code, so this is no conflict of
+			// its making, but an internal error. As a *tyr.Error, it skips
+			// the mappers, which would report ErrExists as a conflict, and
+			// keeps ErrExists as its cause for the logs.
+			err = tyr.Internal("links: no free random code").WithCause(err)
 		}
 	}
 	if err != nil {
