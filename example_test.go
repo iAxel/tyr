@@ -5,9 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"strings"
 
 	"github.com/iaxel/tyr"
+	"github.com/iaxel/tyr/jsonrpc"
+	"github.com/iaxel/tyr/rest"
 )
 
 func ExampleNewLogHandler() {
@@ -64,6 +69,82 @@ func ExampleOperation_Call() {
 	// Output:
 	// https://go.dev <nil>
 	// <nil> not_found: link not found: store: not found
+}
+
+func ExampleAPI_MapError() {
+	type GetLinkReq struct {
+		Code string `json:"code" path:"code"`
+	}
+	errNotFound := errors.New("store: not found") // of a package that doesn't import tyr
+
+	// The internal error goes to the log with its cause; this API drops it.
+	api := tyr.New(tyr.WithLogger(slog.New(slog.DiscardHandler)))
+	api.MapError(func(err error) error {
+		if errors.Is(err, errNotFound) {
+			return tyr.NotFound("link not found").WithCause(err)
+		}
+		return err // unmapped: an internal error for the client
+	})
+	api.Handle("links.get", func(ctx context.Context, req GetLinkReq) (string, error) {
+		if req.Code == "db" {
+			return "", errors.New("db: connection refused")
+		}
+		return "", errNotFound
+	}, rest.Route("GET /links/{code}"))
+	mux := http.NewServeMux()
+	rest.Mount(mux, api)
+
+	for _, target := range []string{"/links/rust", "/links/db"} {
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest("GET", target, nil))
+		fmt.Println(rec.Code, rec.Body)
+	}
+	// Output:
+	// 404 {"type":"about:blank","title":"Not Found","status":404,"detail":"link not found","kind":"not_found"}
+	// 500 {"type":"about:blank","title":"Internal Server Error","status":500,"detail":"internal error","kind":"internal"}
+}
+
+func ExampleRequestInfo() {
+	type GetLinkReq struct {
+		Code string `json:"code" path:"code"`
+	}
+	api := tyr.New()
+	api.Handle("links.get", func(ctx context.Context, req GetLinkReq) (string, error) {
+		return "https://go.dev", nil
+	}, rest.Route("GET /links/{code}"))
+	mux := http.NewServeMux()
+	rest.Mount(mux, api)
+	mux.Handle("POST /rpc", jsonrpc.Handler(api))
+
+	// metrics is middleware above the transports: it puts a RequestInfo in
+	// the context of the request and reads it after next. A real one would
+	// record the duration by route and operation.
+	metrics := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx, info := tyr.WithRequestInfo(r.Context())
+			next.ServeHTTP(w, r.WithContext(ctx))
+			name := "-"
+			if op, ok := info.Operation(); ok {
+				name = op.Name()
+			}
+			fmt.Println(info.Route(), name)
+		})
+	}
+	handler := metrics(mux)
+
+	call := `{"jsonrpc":"2.0","method":"links.get","params":{"code":"go"},"id":1}`
+	for _, req := range []*http.Request{
+		httptest.NewRequest("GET", "/links/go", nil),
+		httptest.NewRequest("POST", "/rpc", strings.NewReader(call)),
+		httptest.NewRequest("POST", "/rpc", strings.NewReader("["+call+","+call+"]")),
+	} {
+		req.Header.Set("Content-Type", "application/json")
+		handler.ServeHTTP(httptest.NewRecorder(), req)
+	}
+	// Output:
+	// GET /links/{code} links.get
+	// POST /rpc links.get
+	// POST /rpc -
 }
 
 func ExampleAPI_Use() {

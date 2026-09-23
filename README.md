@@ -1,8 +1,27 @@
 # ᛏ tyr
 
+[![Go Reference](https://pkg.go.dev/badge/github.com/iaxel/tyr.svg)](https://pkg.go.dev/github.com/iaxel/tyr)
+[![CI](https://github.com/iAxel/tyr/actions/workflows/ci.yml/badge.svg)](https://github.com/iAxel/tyr/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/tag/iAxel/tyr?sort=semver&label=release)](https://github.com/iAxel/tyr/tags)
+[![Go](https://img.shields.io/github/go-mod/go-version/iAxel/tyr)](go.mod)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+Typed operations for Go: write a handler once as a plain function, serve it over REST and JSON-RPC.
+
+## Installation
+
+```sh
+go mod init example.com/links   # if you have no module yet
+go get github.com/iaxel/tyr
+```
+
+tyr needs Go 1.27, for generic methods. With `GOTOOLCHAIN=auto`, the default, the go command downloads that toolchain itself. The module depends on the standard library only.
+
+## Quickstart
+
 ```go
 type GetReq struct {
-	Code string `json:"code" path:"code" validate:"required"`
+	Code string `json:"code" path:"code" validate:"required,min=4"`
 }
 
 func Get(ctx context.Context, req GetReq) (*Link, error) { /* ... */ }
@@ -19,9 +38,43 @@ func main() {
 }
 ```
 
-tyr serves typed operations over `net/http`. A handler is a plain function, `func(ctx, Req) (Res, error)`, with no HTTP types and no context of its own. tyr decodes the request (the JSON body, then the fields tagged `path`, `query` or `header`), validates it, calls the handler and encodes the result or the error. The operation has a name, `links.get`: REST serves it at its route, and JSON-RPC by that name.
+Here `Get` knows one link, `golang`. Each `# =>` is the status and the body of the response:
 
-## Coming from NestJS, Hono or Go
+<!-- Output: tyr.Example_quickstart -->
+```sh
+curl localhost:8080/links/golang
+# => 200 {"code":"golang","url":"https://go.dev"}
+
+curl localhost:8080/links/x
+# => 400 {"type":"about:blank","title":"Bad Request","status":400,"detail":"validation failed","kind":"invalid_argument","errors":[{"pointer":"/code","detail":"must be at least 4 characters"}]}
+
+curl localhost:8080/rpc -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","method":"links.get","params":{"code":"golang"},"id":1}'
+# => 200 {"jsonrpc":"2.0","result":{"code":"golang","url":"https://go.dev"},"id":1}
+```
+
+tyr decodes the request, from the JSON body and then the fields tagged `path`, `query` or `header`, validates it, calls the handler and encodes the result or the error. The operation has a name, `links.get`: REST serves it at its route, and JSON-RPC by that name.
+
+## Features
+
+- Handlers are plain functions, [`func(ctx, Req) (Res, error)`](https://pkg.go.dev/github.com/iaxel/tyr#Handler), with no HTTP types
+- One operation over [REST](https://pkg.go.dev/github.com/iaxel/tyr/rest) and [JSON-RPC 2.0](https://pkg.go.dev/github.com/iaxel/tyr/jsonrpc), by its name
+- [Binding](https://pkg.go.dev/github.com/iaxel/tyr/rest#hdr-Requests) from the JSON body, the path, the query and headers
+- [Validation](https://pkg.go.dev/github.com/iaxel/tyr#hdr-Validation) by tags in the syntax of go-playground/validator and by a `Validate` method
+- [Errors of kinds](https://pkg.go.dev/github.com/iaxel/tyr#Kind): RFC 9457 problems over REST, error codes over JSON-RPC
+- [Interceptors](https://pkg.go.dev/github.com/iaxel/tyr#Interceptor) with typed [metadata](https://pkg.go.dev/github.com/iaxel/tyr#MetaKey) of operations, for authorization, metrics and tracing
+- [Middleware](https://pkg.go.dev/github.com/iaxel/tyr/middleware): request IDs, access logs, recovery from panics
+- [Logs](https://pkg.go.dev/github.com/iaxel/tyr#NewLogHandler) with the request ID and the operation, through `log/slog`
+- The [route and the operation](https://pkg.go.dev/github.com/iaxel/tyr#RequestInfo) of a request, for access logs and metrics
+- No dependencies but the standard library; routing by `http.ServeMux`
+
+## Philosophy
+
+Business logic is a plain function: a context and a request in, a result or an error out. It knows nothing of HTTP, so it stays the same over any transport, and a test calls it as it is. An operation has a name, `links.get`. Transports bind it, REST to a route and JSON-RPC to a method, and only decode requests and encode results and errors; the core owns the rest of a call: interceptors, validation and the mapping of errors.
+
+tyr is a thin layer over `net/http`: routing is `http.ServeMux`, middleware is `func(http.Handler) http.Handler`, and logs go through `log/slog`. Everything beyond the Quickstart is optional, and nothing registers itself behind your back: no global registries, no `init`.
+
+Whether you come from Go or from NestJS and Hono, each piece should look familiar:
 
 | tyr | NestJS / Hono | What a Gopher already knows |
 |---|---|---|
@@ -31,178 +84,269 @@ tyr serves typed operations over `net/http`. A handler is a plain function, `fun
 | `MapError` | ExceptionFilter, `app.onError` | Echo's `HTTPErrorHandler` |
 | `Define` + client (v0.3) | tRPC, Hono RPC, Eden | gRPC proto contract, without codegen |
 
-## Errors
+Týr, the Norse god of law and oaths, put his hand in Fenrir's jaws as the pledge of a fair deal; tyr keeps contracts the compiler checks. ᛏ is his rune.
+
+## Limitations
+
+- Go 1.27 or later: the API uses generic methods.
+- The API may change until v1.
+- JSON only, with `encoding/json/v2`. Forms, multipart and files go to plain handlers on the same mux.
+- Request and response only. Streaming, server-sent events and WebSockets go to plain handlers too, and consumers of event streams are out of scope.
+- JSON-RPC takes params by name only.
+- Validation implements a subset of the tags of go-playground/validator, with the semantics of v10.30.5: `required`, `omitempty`, `min`, `max`, `len`, `gt`, `gte`, `lt`, `lte`, `oneof`, `email`, `url`, `http_url` and `uuid`, without `dive` and `|`. An unknown rule panics at startup. Rules between fields go in a `Validate` method; an adapter for all of go-playground is planned.
+- No typed client yet (v0.3), and no OpenAPI or OpenRPC yet.
+- Authorization belongs in interceptors, not in the middleware of a route: over JSON-RPC, an operation has no route of its own.
+
+## Examples
+
+### [Return an error](https://pkg.go.dev/github.com/iaxel/tyr/rest#example-Mount)
 
 A handler returns a `*tyr.Error` of a kind, and REST sends it as RFC 9457 `application/problem+json` with the status of the kind:
 
+<!-- Output: rest.ExampleMount -->
 ```go
-return nil, tyr.NotFound("link %q not found", req.Code)
+api.Handle("links.get", func(ctx context.Context, req GetLinkReq) (string, error) {
+	if req.Code != "go" {
+		return "", tyr.NotFound("link %q not found", req.Code)
+	}
+	return "https://go.dev", nil
+}, rest.Route("GET /links/{code}"))
+
+// GET /links/go
+// => 200 "https://go.dev"
+// GET /links/rust
+// => 404 {"type":"about:blank","title":"Not Found","status":404,"detail":"link \"rust\" not found","kind":"not_found"}
 ```
 
-```json
-{"type":"about:blank","title":"Not Found","status":404,"detail":"link \"x\" not found","kind":"not_found"}
-```
+### [Translate the errors of other packages](https://pkg.go.dev/github.com/iaxel/tyr#example-API.MapError)
 
-Errors of other packages, such as a store's, need no tyr import there: `MapError` translates them. Anything left untranslated reaches the client as an internal error and goes to the log, with its cause. The client learns no more of an internal error than `"internal error"`: the message of a `tyr.Internal` goes to the log too.
+A store needn't import tyr: `MapError` translates its errors. The client learns no more of an error left untranslated than `internal error`, and the log gets its message and cause:
 
+<!-- Output: tyr.ExampleAPI_MapError -->
 ```go
 api.MapError(func(err error) error {
-	if errors.Is(err, store.ErrNotFound) {
+	if errors.Is(err, errNotFound) {
 		return tyr.NotFound("link not found").WithCause(err)
 	}
-	return err
+	return err // unmapped: an internal error for the client
 })
+
+// GET /links/rust, whose handler returns errNotFound
+// => 404 {"type":"about:blank","title":"Not Found","status":404,"detail":"link not found","kind":"not_found"}
+// GET /links/db, whose handler returns errors.New("db: connection refused")
+// => 500 {"type":"about:blank","title":"Internal Server Error","status":500,"detail":"internal error","kind":"internal"}
 ```
 
-## Validation
+### [Validate a request](https://pkg.go.dev/github.com/iaxel/tyr#example-package-Validation)
 
-`validate` tags use the syntax of go-playground/validator. The core implements a subset, with the semantics of v10.30.5: `required`, `omitempty`, `min`, `max`, `len`, `gt`, `gte`, `lt`, `lte`, `oneof`, `email`, `url`, `http_url`, `uuid`. An unknown rule panics at startup. Rules that tags can't express go in a `Validate` method:
+Tags check each field; a `Validate` method, the rules that tags can't express. A failed check is a 400 with a JSON pointer per field:
 
+<!-- Output: tyr.Example_validation -->
 ```go
-type CreateReq struct {
+type CreateLinkReq struct {
 	URL  string `json:"url" validate:"required,http_url"`
 	Code string `json:"code" validate:"omitempty,min=4,max=16"`
 }
 
-func (r CreateReq) Validate() error {
+func (r CreateLinkReq) Validate() error {
 	var v tyr.Violations
 	if r.Code != "" && !codeRe.MatchString(r.Code) {
 		v.Add("code", "only a-z, 0-9 and '-'")
 	}
 	return v.Err()
 }
+
+// POST /links {"url":"ftp://go.dev","code":"go"}
+// => 400 {"type":"about:blank","title":"Bad Request","status":400,"detail":"validation failed","kind":"invalid_argument","errors":[{"pointer":"/url","detail":"must be an http or https URL"},{"pointer":"/code","detail":"must be at least 4 characters"}]}
+// POST /links {"url":"https://go.dev","code":"Go!!"}
+// => 400 {"type":"about:blank","title":"Bad Request","status":400,"detail":"validation failed","kind":"invalid_argument","errors":[{"pointer":"/code","detail":"only a-z, 0-9 and '-'"}]}
 ```
 
-A failed check is a 400 with a JSON pointer per field:
+Validation runs after the interceptors, so a client that isn't allowed to call an operation learns that, not what's wrong with its request.
 
-```json
-{"type":"about:blank","title":"Bad Request","status":400,"detail":"validation failed","kind":"invalid_argument","errors":[{"pointer":"/code","detail":"must be at least 4 characters"}]}
-```
+### [Authorize with an interceptor](https://pkg.go.dev/github.com/iaxel/tyr#example-Interceptor)
 
-## Interceptors and metadata
+Interceptors run around every operation, over every transport, so authorization belongs there. A `MetaKey` attaches typed metadata to operations, here the roles they require, and a group gives it to several. The role of the caller comes from HTTP middleware that reads the token and puts the role in the context, under a key of `ctxkey`. A caller without a role isn't authenticated, and one with another role isn't allowed:
 
-Interceptors run around every operation, over every transport, so authorization belongs there rather than in the middleware of a route. A `MetaKey` attaches typed metadata to operations, for interceptors to read. Who the caller is comes from the HTTP request, so middleware finds that out and puts the caller in the context, under a typed key of `ctxkey`:
-
+<!-- Output: tyr.ExampleInterceptor -->
 ```go
-var callerKey = ctxkey.New[Caller]("caller")
+var roles = tyr.NewMetaKey[[]string]("authz.roles")
 
-// authenticate is HTTP middleware: it reads the request.
-func authenticate(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if c, ok := callerOf(r.Header.Get("Authorization")); ok {
-			r = r.WithContext(callerKey.Set(r.Context(), c))
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
-var roleKey = tyr.NewMetaKey[string]("role")
-
-// The interceptor authorizes, over every transport.
-api.Use(func(ctx context.Context, op *tyr.Operation, req any, next tyr.Invoker) (any, error) {
-	role, ok := roleKey.Get(op)
+func authorize(ctx context.Context, op *tyr.Operation, req any, next tyr.Invoker) (any, error) {
+	want, ok := roles.Get(op)
 	if !ok {
 		return next(ctx, req)
 	}
-	c, ok := callerKey.Get(ctx)
+	role, ok := userRole.Get(ctx)
 	if !ok {
 		return nil, tyr.Unauthenticated("log in first")
 	}
-	if !slices.Contains(c.Roles, role) {
-		return nil, tyr.PermissionDenied("%s requires the role %s", op.Name(), role)
+	if !slices.Contains(want, role) {
+		return nil, tyr.PermissionDenied("requires one of %v", want)
 	}
 	return next(ctx, req)
-})
+}
 
-admin := api.Group(roleKey.Option("admin"))
-admin.Handle("links.delete", Delete, rest.Route("DELETE /links/{code}"))
+api.Use(authorize)
+admin := api.Group(roles.Option([]string{"admin"}))
+admin.Handle("links.purge", Purge, rest.Route("POST /links/purge"))
 
-// RFC 9110 requires a WWW-Authenticate challenge on every 401.
+// RFC 9110 requires a challenge on every 401.
 rest.Mount(mux, api, rest.Challenge(`Bearer realm="links"`))
+
+// POST /links/purge without a token
+// => 401 {"type":"about:blank","title":"Unauthorized","status":401,"detail":"log in first","kind":"unauthenticated"}
+// => WWW-Authenticate: Bearer realm="links"
+// POST /links/purge with a user's token
+// => 403 {"type":"about:blank","title":"Forbidden","status":403,"detail":"requires one of [admin]","kind":"permission_denied"}
+// POST /links/purge with the admin's token
+// => 200 "purged"
 ```
 
-## Headers and redirects
+### [Set headers and redirect](https://pkg.go.dev/github.com/iaxel/tyr/rest#example-Status)
 
-A result sets headers of the response with fields tagged `header`, and a redirect is a status and a `Location`:
+Fields of a result tagged `header` set headers of the response, and a redirect is a status and a `Location`:
 
+<!-- Output: rest.ExampleStatus -->
 ```go
+type Created struct {
+	Code     string `json:"code"`
+	URL      string `json:"url"`
+	Location string `json:"-" header:"Location"` // a header, not a member
+}
+
 type FollowRes struct {
 	URL string `json:"url" header:"Location"` // JSON-RPC gets it as a member
 }
 
+api.Handle("links.create", Create, rest.Route("POST /links"), rest.Status(http.StatusCreated))
 api.Handle("links.follow", Follow, rest.Route("GET /{code}"), rest.Status(http.StatusFound))
+
+// POST /links {"url":"https://go.dev","code":"golang"}
+// => 201 Location: /links/golang
+// => {"code":"golang","url":"https://go.dev"}
+// GET /golang
+// => 302 Location: https://go.dev
 ```
 
-## JSON-RPC
+### [Serve the same operation over JSON-RPC](https://pkg.go.dev/github.com/iaxel/tyr/jsonrpc#example-Handler)
 
-`jsonrpc.Handler` serves the same operations over JSON-RPC 2.0, with the same interceptors, validation and errors. The method is the name of the operation, and params are its request, by name:
+The method is the name of the operation, and params are its request, by name. The code of an error is the HTTP status that REST sends for its kind, but two kinds get codes of JSON-RPC itself: -32602 for `invalid_argument`, with the violations that REST sends, and -32603 for `internal`, which tells the client no more than `internal error`. A batch runs up to 8 calls at a time, and a notification, a call without an id, gets no response:
 
-```sh
-curl localhost:8080/rpc -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","method":"links.get","params":{"code":"go"},"id":1}'
-```
-
-```json
-{"jsonrpc":"2.0","result":{"code":"go","url":"https://go.dev"},"id":1}
-```
-
-The error of an operation has its kind in `data`, and its code is the HTTP status that REST sends for the kind, or -32602 for `invalid_argument`, with the violations that REST sends:
-
-```json
-{"jsonrpc":"2.0","error":{"code":404,"message":"link not found","data":{"kind":"not_found"}},"id":1}
-```
-
-A batch runs up to 8 calls at a time, and a notification, a call without an id, gets no response.
-
-## Middleware and logs
-
-HTTP middleware is `func(http.Handler) http.Handler`, and `middleware.Chain` applies it, the first outermost. `rest.ProblemHandler` makes the 404 and 405 of the mux problems too:
-
+<!-- Output: jsonrpc.ExampleHandler -->
 ```go
-slog.SetDefault(slog.New(tyr.NewLogHandler(slog.NewJSONHandler(os.Stderr, nil))))
+mux.Handle("POST /rpc", jsonrpc.Handler(api))
 
-handler := middleware.Chain(rest.ProblemHandler(mux),
+// POST /rpc {"jsonrpc": "2.0", "method": "links.get", "params": {"code": "go"}, "id": 1}
+// => 200 {"jsonrpc":"2.0","result":{"code":"go","url":"https://go.dev"},"id":1}
+// POST /rpc {"jsonrpc": "2.0", "method": "links.get", "params": {"code": "gone"}, "id": 2}
+// => 200 {"jsonrpc":"2.0","error":{"code":404,"message":"link \"gone\" not found","data":{"kind":"not_found"}},"id":2}
+```
+
+### [Log with the request ID and the operation](https://pkg.go.dev/github.com/iaxel/tyr#example-NewLogHandler)
+
+There is no logger in the context: code logs with the context, and `tyr.NewLogHandler` adds the request ID and the operation of the context to every record, at its top level, even in a group:
+
+<!-- Output: tyr.ExampleNewLogHandler -->
+```go
+logger := slog.New(tyr.NewLogHandler(slog.NewJSONHandler(os.Stderr, nil)))
+
+logger.InfoContext(ctx, "link found", "code", "go")
+// => {"level":"INFO","msg":"link found","request_id":"0192f5e2","operation":"links.get","code":"go"}
+logger.WithGroup("db").InfoContext(ctx, "query", "rows", 1)
+// => {"level":"INFO","msg":"query","request_id":"0192f5e2","operation":"links.get","db":{"rows":1}}
+```
+
+The records above leave out the time.
+
+### [Chain middleware](https://pkg.go.dev/github.com/iaxel/tyr/middleware#example-Chain)
+
+<!-- Output: middleware.ExampleChain -->
+```go
+handler := middleware.Chain(mux, // first = outermost
 	middleware.RequestID(),
-	middleware.Logger(slog.Default()),
-	middleware.Recover(slog.Default()),
-	http.NewCrossOriginProtection().Handler,
-	authenticate,
+	middleware.Logger(logger),
+	middleware.Recover(logger),
 )
+
+// GET /links/go, with X-Request-ID: req-go
+// => {"level":"INFO","msg":"middleware: request","request_id":"req-go","method":"GET","route":"GET /links/{code}","status":200}
+// GET /links/bug, whose handler panics, with X-Request-ID: req-bug
+// => {"level":"ERROR","msg":"middleware: panic","request_id":"req-bug","panic":"index out of range"}
+// the status, the X-Request-ID and the body of the response
+// => 500 req-bug {"type":"about:blank","title":"Internal Server Error","status":500}
 ```
 
-Logger writes a record per request with its route and operation, which the transport records in a `tyr.RequestInfo` in the request context. So middleware under Logger may pass on another request, as `authenticate` does to put the caller in the context. Metrics of your own read the same `RequestInfo` once the handler returns:
+The records above leave out the time and the duration.
 
+### [Measure requests by route and operation](https://pkg.go.dev/github.com/iaxel/tyr#example-RequestInfo)
+
+Middleware above the transports gets the route and the operation of a request from a `tyr.RequestInfo`, which the transport fills in, even if middleware in between passes on another request. A batch has no single operation:
+
+<!-- Output: tyr.ExampleRequestInfo -->
 ```go
-ctx, info := tyr.WithRequestInfo(r.Context())
-next.ServeHTTP(w, r.WithContext(ctx))
-route := info.Route()
-op, ok := info.Operation()
+func metrics(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx, info := tyr.WithRequestInfo(r.Context())
+		next.ServeHTTP(w, r.WithContext(ctx))
+		name := "-"
+		if op, ok := info.Operation(); ok {
+			name = op.Name()
+		}
+		fmt.Println(info.Route(), name)
+	})
+}
+
+// GET /links/go
+// => GET /links/{code} links.get
+// POST /rpc, a call of links.get
+// => POST /rpc links.get
+// POST /rpc, a batch
+// => POST /rpc -
 ```
 
-There is no logger in the context: code logs with `slog.InfoContext(ctx, ...)`, and `tyr.NewLogHandler` adds the request ID and the operation of the context to every record.
+A whole service, [`examples/shortlink`](examples/shortlink), is a URL shortener built on tyr the way a user would build it: an in-memory store, REST and JSON-RPC, validation, `MapError`, authorization with an interceptor, middleware, graceful shutdown and end-to-end tests.
 
-## Example
+## Middleware
 
-[`examples/shortlink`](examples/shortlink) is a small URL shortener built on tyr, the way a user would build it: an in-memory store, REST and JSON-RPC, validation, `MapError`, authorization with an interceptor, middleware, graceful shutdown and end-to-end tests.
+| Middleware | What it does | Where it goes |
+|---|---|---|
+| [`middleware.RequestID`](https://pkg.go.dev/github.com/iaxel/tyr/middleware#RequestID) | Keeps a valid `X-Request-ID` or makes a UUIDv7, and puts it in the response and the context | first |
+| [`middleware.Logger`](https://pkg.go.dev/github.com/iaxel/tyr/middleware#Logger) | Writes a record per request: the method, the route, the operation, the status and the duration | under RequestID |
+| [`middleware.Recover`](https://pkg.go.dev/github.com/iaxel/tyr/middleware#Recover) | Turns a panic into a 500 problem and logs it with the stack | under Logger |
+| [`http.CrossOriginProtection`](https://pkg.go.dev/net/http#CrossOriginProtection) | Rejects unsafe cross-origin requests, against CSRF; from the standard library | under Recover |
+| [`rest.ProblemHandler`](https://pkg.go.dev/github.com/iaxel/tyr/rest#ProblemHandler) | Makes the 404 and 405 of the mux problems, as the errors of operations are | around the mux |
 
-## Install
+`middleware.Chain` applies them, the first outermost. Any `func(http.Handler) http.Handler` goes in the chain, those of the standard library too, and middleware of your own, such as authentication, may go under all of them.
+
+## Roadmap
+
+- [x] v0.1: REST
+- [x] v0.2: JSON-RPC 2.0, the `canceled` kind, `RequestInfo` for access logs and metrics
+- [ ] v0.3: contracts (`Define`), a typed JSON-RPC client, an in-process client for tests
+- [ ] JSON Schema, OpenAPI 3.1 and OpenRPC from the same types
+- [ ] OpenTelemetry, timeouts, CORS and an adapter for all of go-playground/validator
+- [ ] Later: a REST client, a TypeScript client, NATS and MCP
+
+The API may change until v1.
+
+## Development
 
 ```sh
-go get github.com/iaxel/tyr
+gofmt -l .
+go vet ./...
+go test -race ./...
+golangci-lint run
+(cd internal/playgroundtest && go test ./...)
+go test ./rest ./jsonrpc -update
+go test -run '^$' -bench . -benchmem ./...
 ```
 
-tyr needs Go 1.27, for generic methods. With `GOTOOLCHAIN=auto`, the default, the go command downloads that toolchain itself. The module depends on the standard library only.
-
-## Status
-
-v0.2: REST and JSON-RPC 2.0. The API may change until v1. Next:
-
-- v0.3: contracts (`Define`), a typed client, an in-process client for tests
-- then: JSON Schema, OpenAPI 3.1 and OpenRPC from the same types; OpenTelemetry, timeouts, CORS and a go-playground adapter
-
-## The name
-
-Týr, the Norse god of law and oaths, put his hand in Fenrir's jaws as the pledge of a fair deal; tyr keeps contracts the compiler checks. ᛏ is his rune.
+- golangci-lint v2.13.2 must be built with Go 1.27, for generic methods: `go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2`.
+- `internal/playgroundtest` is a module of its own, so that the root module has no dependencies: it checks that the `validate` tags of the core fail the same fields as go-playground/validator v10.30.5.
+- `-update` rewrites the golden files of `rest` and `jsonrpc`.
+- `TestREADME` checks the results in this README against the output of the examples they come from, named by a comment such as `<!-- Output: rest.ExampleMount -->` before the block.
+- CI runs these on every push and pull request. Commits follow [Conventional Commits](https://www.conventionalcommits.org).
 
 ## License
 
