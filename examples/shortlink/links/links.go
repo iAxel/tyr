@@ -1,5 +1,5 @@
 // Package links is the business logic of the service: it creates short
-// links, resolves them and purges the ones to a host.
+// links, follows and deletes them, and purges the ones to a host.
 package links
 
 import (
@@ -24,24 +24,25 @@ type Link struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+// Created is a link just created, with the path of its resource, which
+// REST sends as the Location of 201 Created.
+type Created struct {
+	Link
+	Location string `json:"-" header:"Location"`
+}
+
 // CreateReq is a request to create a link. Without a code, the link gets a
 // random one.
 type CreateReq struct {
-	URL  string `json:"url" validate:"required,url"`
+	URL  string `json:"url" validate:"required,http_url"`
 	Code string `json:"code" validate:"omitempty,min=4,max=16"`
 }
 
 var codeRe = regexp.MustCompile(`^[a-z0-9-]+$`)
 
-// Validate holds the rules tags can't express: the scheme of the URL and
-// the characters of the code. It runs after the tags passed, so the URL
-// parses.
+// Validate holds the rule tags can't express: the characters of the code.
 func (r CreateReq) Validate() error {
 	var v tyr.Violations
-	// The url rule takes any scheme, javascript: and mailto: too.
-	if u, err := url.Parse(r.URL); err != nil || u.Scheme != "http" && u.Scheme != "https" || u.Host == "" {
-		v.Add("url", "must be an http or https URL")
-	}
 	if r.Code != "" && !codeRe.MatchString(r.Code) {
 		v.Add("code", "only a-z, 0-9 and '-'")
 	}
@@ -50,6 +51,17 @@ func (r CreateReq) Validate() error {
 
 // GetReq is a request for a link.
 type GetReq struct {
+	Code string `json:"code" path:"code" validate:"required"`
+}
+
+// FollowRes is where a link leads: REST redirects to it, JSON-RPC returns
+// it.
+type FollowRes struct {
+	URL string `json:"url" header:"Location"`
+}
+
+// DeleteReq is a request to delete a link.
+type DeleteReq struct {
 	Code string `json:"code" path:"code" validate:"required"`
 }
 
@@ -76,7 +88,7 @@ func New(s *store.Store) *Service {
 }
 
 // Create creates a link.
-func (s *Service) Create(ctx context.Context, req CreateReq) (Link, error) {
+func (s *Service) Create(ctx context.Context, req CreateReq) (Created, error) {
 	l := store.Link{Code: req.Code, URL: req.URL, CreatedAt: time.Now().UTC()}
 	var err error
 	if l.Code != "" {
@@ -96,10 +108,10 @@ func (s *Service) Create(ctx context.Context, req CreateReq) (Link, error) {
 		}
 	}
 	if err != nil {
-		return Link{}, err
+		return Created{}, err
 	}
 	slog.InfoContext(ctx, "link created", "code", l.Code)
-	return linkOf(l), nil
+	return Created{Link: linkOf(l), Location: "/links/" + l.Code}, nil
 }
 
 // Get returns a link.
@@ -109,6 +121,24 @@ func (s *Service) Get(ctx context.Context, req GetReq) (Link, error) {
 		return Link{}, err
 	}
 	return linkOf(l), nil
+}
+
+// Follow returns where a link leads.
+func (s *Service) Follow(ctx context.Context, req GetReq) (FollowRes, error) {
+	l, err := s.store.Get(ctx, req.Code)
+	if err != nil {
+		return FollowRes{}, err
+	}
+	return FollowRes{URL: l.URL}, nil
+}
+
+// Delete deletes a link.
+func (s *Service) Delete(ctx context.Context, req DeleteReq) (struct{}, error) {
+	if err := s.store.Delete(ctx, req.Code); err != nil {
+		return struct{}{}, err
+	}
+	slog.InfoContext(ctx, "link deleted", "code", req.Code)
+	return struct{}{}, nil
 }
 
 // Purge deletes the links to a host.

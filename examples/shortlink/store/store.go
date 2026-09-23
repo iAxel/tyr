@@ -58,6 +58,17 @@ func (s *Store) Get(ctx context.Context, code string) (Link, error) {
 	return l, nil
 }
 
+// Delete deletes the link with the code, or returns ErrNotFound.
+func (s *Store) Delete(ctx context.Context, code string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.links[code]; !ok {
+		return fmt.Errorf("%w: %s", ErrNotFound, code)
+	}
+	delete(s.links, code)
+	return nil
+}
+
 // DeleteFunc deletes the links for which del returns true and returns how
 // many it deleted.
 func (s *Store) DeleteFunc(ctx context.Context, del func(Link) bool) int {

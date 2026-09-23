@@ -26,6 +26,15 @@ func TestStore(t *testing.T) {
 		t.Errorf("Get() of a missing code: error = %v, want ErrNotFound", err)
 	}
 
+	if err := s.Delete(ctx, "golang"); err != nil {
+		t.Errorf("Delete() error = %v", err)
+	}
+	if err := s.Delete(ctx, "golang"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("Delete() of a missing code: error = %v, want ErrNotFound", err)
+	}
+	if err := s.Create(ctx, golang); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
 	if err := s.Create(ctx, store.Link{Code: "rust", URL: "https://rust-lang.org"}); err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}

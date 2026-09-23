@@ -6,6 +6,8 @@
 //
 //	curl -i localhost:8080/links -H 'Content-Type: application/json' -d '{"url":"https://go.dev"}'
 //	curl -i localhost:8080/links/<code>
+//	curl -i localhost:8080/<code>
+//	curl -i -X DELETE localhost:8080/links/<code> -H 'Authorization: Bearer secret'
 package main
 
 import (
@@ -81,8 +83,10 @@ func newAPI(svc *links.Service, logger *slog.Logger) *tyr.API {
 
 	api.Handle("links.create", svc.Create, rest.Route("POST /links"), rest.Status(http.StatusCreated))
 	api.Handle("links.get", svc.Get, rest.Route("GET /links/{code}"))
+	api.Handle("links.follow", svc.Follow, rest.Route("GET /{code}"), rest.Status(http.StatusFound))
 
 	admin := api.Group(authz.Require("admin"))
+	admin.Handle("links.delete", svc.Delete, rest.Route("DELETE /links/{code}"))
 	admin.Handle("links.purge", svc.Purge) // no REST route: JSON-RPC only
 	return api
 }
@@ -92,11 +96,18 @@ func newAPI(svc *links.Service, logger *slog.Logger) *tyr.API {
 // internet.
 func newServer(addr string, api *tyr.API, callers map[string]authz.Caller, logger *slog.Logger) *http.Server {
 	mux := http.NewServeMux()
-	rest.Mount(mux, api)
+	rest.Mount(mux, api, rest.Challenge(`Bearer realm="shortlink"`))
+
+	csrf := http.NewCrossOriginProtection()
+	csrf.SetDenyHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rest.WriteProblem(w, http.StatusForbidden)
+	}))
 
 	return &http.Server{
 		Addr: addr,
-		Handler: middleware.Chain(mux, // first = outermost
+		// The 404 and 405 of the mux are problems, as the errors of
+		// operations are.
+		Handler: middleware.Chain(rest.ProblemHandler(mux), // first = outermost
 			middleware.RequestID(),
 			// Above Logger: it passes on a request with another context,
 			// and the route the mux sets in that request wouldn't reach
@@ -104,7 +115,7 @@ func newServer(addr string, api *tyr.API, callers map[string]authz.Caller, logge
 			authz.Authenticate(callers),
 			middleware.Logger(logger),
 			middleware.Recover(logger),
-			http.NewCrossOriginProtection().Handler,
+			csrf.Handler,
 		),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,

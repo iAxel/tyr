@@ -22,8 +22,11 @@ import (
 	"github.com/iaxel/tyr/examples/shortlink/store"
 )
 
-// adminToken is the token of the admin of the service under test.
-const adminToken = "secret"
+// The tokens of the admin and of a user of the service under test.
+const (
+	adminToken = "secret"
+	userToken  = "user-secret"
+)
 
 // service is the service under test.
 type service struct {
@@ -38,9 +41,16 @@ func start(t *testing.T) *service {
 	logs := &logs{}
 	logger := slog.New(tyr.NewLogHandler(logs))
 	api := newAPI(links.New(store.New()), logger)
-	callers := map[string]authz.Caller{adminToken: {Name: "admin", Roles: []string{"admin"}}}
+	callers := map[string]authz.Caller{
+		adminToken: {Name: "admin", Roles: []string{"admin"}},
+		userToken:  {Name: "user"},
+	}
 	srv := newServer("", api, callers, logger)
-	return &service{api: api, client: httptest.NewTestServer(t, srv.Handler).Client(), logs: logs}
+	client := httptest.NewTestServer(t, srv.Handler).Client()
+	// Show redirects to the test instead of following them: the client of
+	// the test server sends requests to every host to the service.
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return &service{api: api, client: client, logs: logs}
 }
 
 // do sends a request, with a JSON body unless body is empty and with the
@@ -76,12 +86,17 @@ func TestLinks(t *testing.T) {
 		const link = `{"code":"go-docs","url":"https://go.dev/doc/","created_at":"2000-01-01T00:00:00Z"}`
 
 		resp, body := s.do(t, "POST", "/links", `{"url":"https://go.dev/doc/","code":"go-docs"}`)
-		if resp.StatusCode != http.StatusCreated || body != link || resp.Header.Get("X-Request-ID") == "" {
-			t.Errorf("create = %d %s, request ID %q; want 201 %s with an ID", resp.StatusCode, body, resp.Header.Get("X-Request-ID"), link)
+		if resp.StatusCode != http.StatusCreated || body != link || resp.Header.Get("Location") != "/links/go-docs" || resp.Header.Get("X-Request-ID") == "" {
+			t.Errorf("create = %d %v %s; want 201 %s with a Location and a request ID", resp.StatusCode, resp.Header, body, link)
 		}
 		resp, body = s.do(t, "GET", "/links/go-docs", "")
 		if resp.StatusCode != http.StatusOK || body != link {
 			t.Errorf("get = %d %s, want 200 %s", resp.StatusCode, body, link)
+		}
+		// The short link itself redirects.
+		resp, body = s.do(t, "GET", "/go-docs", "")
+		if resp.StatusCode != http.StatusFound || resp.Header.Get("Location") != "https://go.dev/doc/" || body != "" {
+			t.Errorf("follow = %d %v %q, want 302 to https://go.dev/doc/ without a body", resp.StatusCode, resp.Header, body)
 		}
 
 		// The errors of the store, translated by MapError.
@@ -134,7 +149,7 @@ func TestCreateInvalid(t *testing.T) {
 			name:   "not a URL",
 			body:   `{"url":"go.dev"}`,
 			status: http.StatusBadRequest,
-			want:   violation("/url", "must be a URL"),
+			want:   violation("/url", "must be an http or https URL"),
 		},
 		{
 			name:   "not an http URL",
@@ -190,11 +205,58 @@ func TestCrossOrigin(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		s := start(t)
 		// A page of another site posts to the service from a browser.
-		if resp, body := s.do(t, "POST", "/links", `{"url":"https://evil.example"}`, "Sec-Fetch-Site", "cross-site"); resp.StatusCode != http.StatusForbidden {
-			t.Errorf("cross-site create = %d %s, want 403", resp.StatusCode, body)
+		const forbidden = `{"type":"about:blank","title":"Forbidden","status":403}`
+		if resp, body := s.do(t, "POST", "/links", `{"url":"https://evil.example"}`, "Sec-Fetch-Site", "cross-site"); resp.StatusCode != http.StatusForbidden || body != forbidden {
+			t.Errorf("cross-site create = %d %s, want 403 %s", resp.StatusCode, body, forbidden)
 		}
 		if resp, body := s.do(t, "POST", "/links", `{"url":"https://go.dev"}`, "Sec-Fetch-Site", "same-origin"); resp.StatusCode != http.StatusCreated {
 			t.Errorf("same-origin create = %d %s, want 201", resp.StatusCode, body)
+		}
+	})
+}
+
+func TestDelete(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := start(t)
+		if resp, body := s.do(t, "POST", "/links", `{"url":"https://go.dev","code":"golang"}`); resp.StatusCode != http.StatusCreated {
+			t.Fatalf("create = %d %s", resp.StatusCode, body)
+		}
+
+		// Only the admin deletes links; a client without a token learns how
+		// to authenticate.
+		resp, body := s.do(t, "DELETE", "/links/golang", "")
+		const unauthenticated = `{"type":"about:blank","title":"Unauthorized","status":401,"detail":"a valid bearer token is required","kind":"unauthenticated"}`
+		if resp.StatusCode != http.StatusUnauthorized || resp.Header.Get("WWW-Authenticate") != `Bearer realm="shortlink"` || body != unauthenticated {
+			t.Errorf("delete without a token = %d %v %s, want 401 with a challenge", resp.StatusCode, resp.Header, body)
+		}
+		if resp, body := s.do(t, "DELETE", "/links/golang", "", "Authorization", "Bearer "+userToken); resp.StatusCode != http.StatusForbidden {
+			t.Errorf("delete by a user = %d %s, want 403", resp.StatusCode, body)
+		}
+		if resp, body := s.do(t, "DELETE", "/links/golang", "", "Authorization", "Bearer "+adminToken); resp.StatusCode != http.StatusNoContent || body != "" {
+			t.Errorf("delete by the admin = %d %q, want 204", resp.StatusCode, body)
+		}
+		if resp, _ := s.do(t, "GET", "/links/golang", ""); resp.StatusCode != http.StatusNotFound {
+			t.Errorf("get a deleted link = %d, want 404", resp.StatusCode)
+		}
+		if resp, _ := s.do(t, "DELETE", "/links/golang", "", "Authorization", "Bearer "+adminToken); resp.StatusCode != http.StatusNotFound {
+			t.Errorf("delete a deleted link = %d, want 404", resp.StatusCode)
+		}
+	})
+}
+
+func TestMuxProblems(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := start(t)
+		// The mux has no route for the path, or none for the method.
+		resp, body := s.do(t, "GET", "/links/go/stats", "")
+		const notFound = `{"type":"about:blank","title":"Not Found","status":404}`
+		if resp.StatusCode != http.StatusNotFound || resp.Header.Get("Content-Type") != "application/problem+json" || body != notFound {
+			t.Errorf("unknown path = %d %v %s, want 404 %s", resp.StatusCode, resp.Header, body, notFound)
+		}
+		resp, body = s.do(t, "PUT", "/links/go", "")
+		const notAllowed = `{"type":"about:blank","title":"Method Not Allowed","status":405}`
+		if resp.StatusCode != http.StatusMethodNotAllowed || resp.Header.Get("Allow") != "DELETE, GET, HEAD" || body != notAllowed {
+			t.Errorf("PUT = %d %v %s, want 405 %s with Allow", resp.StatusCode, resp.Header, body, notAllowed)
 		}
 	})
 }
