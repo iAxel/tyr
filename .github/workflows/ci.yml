@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.27"
+          # The root module has no dependencies: only the module of
+          # internal/playgroundtest has a go.sum.
+          cache-dependency-path: internal/playgroundtest/go.sum
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "not formatted by gofmt:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test -race
+        run: go test -race ./...
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.13.2
+          # Built with the Go above: a release binary built with an older Go
+          # can't read the generic methods of Go 1.27.
+          install-mode: goinstall
+
+      - name: internal/playgroundtest
+        working-directory: internal/playgroundtest
+        run: |
+          go vet ./...
+          go test -race ./...
