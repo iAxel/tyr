@@ -225,7 +225,7 @@ func newRule(key, param string, t reflect.Type) (rule, error) {
 	}
 
 	c, compares := comparisonOf(key)
-	known := compares || key == "oneof" || key == "email" || key == "url" || key == "uuid"
+	known := compares || key == "oneof" || key == "email" || key == "url" || key == "http_url" || key == "uuid"
 	switch {
 	case !known:
 		return r, fmt.Errorf("unknown rule %q; %s", key, hint)
@@ -351,8 +351,8 @@ func oneOfRule(r rule, param string, t reflect.Type) (rule, error) {
 	return r, nil
 }
 
-// stringRule returns the rule email, url or uuid, which check strings; uuid
-// also checks a fmt.Stringer, as go-playground does.
+// stringRule returns the rule email, url, http_url or uuid, which check
+// strings; uuid also checks a fmt.Stringer, as go-playground does.
 func stringRule(r rule, param string, t reflect.Type) (rule, error) {
 	if param != "" {
 		return r, fmt.Errorf("rule %q takes no parameter", r.name)
@@ -368,6 +368,8 @@ func stringRule(r rule, param string, t reflect.Type) (rule, error) {
 		r.detail, matches = "must be an email address", isEmail
 	case "url":
 		r.detail, matches = "must be a URL", isURL
+	case "http_url":
+		r.detail, matches = "must be an http or https URL", isHTTPURL
 	default:
 		r.detail, matches = "must be a UUID", isUUID
 	}
@@ -395,6 +397,16 @@ func isURL(s string) bool {
 		return u.Path != "" && u.Path != "/"
 	}
 	return u.Host != "" || u.Fragment != "" || u.Opaque != ""
+}
+
+// isHTTPURL is isHttpURL of go-playground: a URL, see isURL, with a host
+// and the scheme http or https.
+func isHTTPURL(s string) bool {
+	if !isURL(s) {
+		return false
+	}
+	u, err := url.Parse(strings.ToLower(s))
+	return err == nil && u.Host != "" && (u.Scheme == "http" || u.Scheme == "https")
 }
 
 // isUUID matches uUIDRegexString of go-playground: 8-4-4-4-12 hexadecimal

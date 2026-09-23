@@ -253,6 +253,10 @@ type Formats struct {
 	UUID     string `json:"uuid" validate:"uuid"`
 	UUIDHex  string `json:"uuid_hex" validate:"uuid"`
 	Level    uint8  `json:"level" validate:"oneof=1 2"`
+	Web      string `json:"web" validate:"http_url"`
+	WebUpper string `json:"web_upper" validate:"http_url"`
+	WebPort  string `json:"web_port" validate:"http_url"`
+	WebBare  string `json:"web_bare" validate:"http_url"`
 }
 
 // Checks returns values with valid and invalid fields and the violations
@@ -292,7 +296,8 @@ func Checks() []Check {
 				Email: "ann@go.dev", File: "file:///tmp/x", Opaque: "mailto:ann@go.dev",
 				Fragment: "x:/#top", Upper: "HTTPS://GO.DEV",
 				UUID: "f81d4fae-7dec-11d0-a765-00a0c91e6bf6", UUIDHex: "F81D4FAE-7DEC-11D0-A765-00A0C91E6BF6",
-				Level: 2,
+				Level: 2, Web: "https://go.dev", WebUpper: "HTTP://GO.DEV/doc", WebPort: "http://127.0.0.1:8080",
+				WebBare: "https://go.dev/doc/",
 			},
 		},
 		{
@@ -300,7 +305,8 @@ func Checks() []Check {
 			Value: Formats{
 				Email: "no-at-sign", File: "file:///", Opaque: "mailto:", Fragment: "x:/",
 				UUID: "f81d4fae_7dec-11d0-a765-00a0c91e6bf6", UUIDHex: "f81d4fae-7dec-11d0-a765-00a0c91e6bfg",
-				Level: 3,
+				Level: 3, Web: "javascript:alert(1)", WebUpper: "HTTP:go.dev", WebPort: "ftp://go.dev",
+				WebBare: "go.dev",
 			},
 			Want: []Violation{
 				{"/email", "must be an email address"},
@@ -311,6 +317,10 @@ func Checks() []Check {
 				{"/uuid", "must be a UUID"},
 				{"/uuid_hex", "must be a UUID"},
 				{"/level", "must be one of: 1, 2"},
+				{"/web", "must be an http or https URL"},
+				{"/web_upper", "must be an http or https URL"},
+				{"/web_port", "must be an http or https URL"},
+				{"/web_bare", "must be an http or https URL"},
 			},
 		},
 		{

@@ -11,16 +11,16 @@
 // fields, then calls its Validate method if it's a [Validator]:
 //
 //	type CreateReq struct {
-//		URL  string `json:"url" validate:"required,url"`
+//		URL  string `json:"url" validate:"required,http_url"`
 //		Code string `json:"code" validate:"omitempty,min=4,max=16"`
 //	}
 //
 // The tags are a subset of those of go-playground/validator, with the same
 // meaning as there with the option WithRequiredStructEnabled: required,
-// omitempty, min, max, len, gt, gte, lt, lte, oneof, email, url and uuid.
-// Strings are measured in runes, slices and maps by length, numbers by
-// value. Nested and embedded structs are checked too, but not the elements
-// of slices and maps.
+// omitempty, min, max, len, gt, gte, lt, lte, oneof, email, url, http_url
+// and uuid. Strings are measured in runes, slices and maps by length,
+// numbers by value. Nested and embedded structs are checked too, but not
+// the elements of slices and maps.
 //
 // A field fails on its first failing rule, and each failing field adds one
 // [Violation], with the JSON Pointer of the field; the violations come in
