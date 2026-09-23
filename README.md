@@ -56,11 +56,11 @@ api.MapError(func(err error) error {
 
 ## Validation
 
-`validate` tags use the syntax of go-playground/validator. The core implements a subset, with the semantics of v10.30.5: `required`, `omitempty`, `min`, `max`, `len`, `gt`, `gte`, `lt`, `lte`, `oneof`, `email`, `url`, `uuid`. An unknown rule panics at startup. Rules that tags can't express go in a `Validate` method:
+`validate` tags use the syntax of go-playground/validator. The core implements a subset, with the semantics of v10.30.5: `required`, `omitempty`, `min`, `max`, `len`, `gt`, `gte`, `lt`, `lte`, `oneof`, `email`, `url`, `http_url`, `uuid`. An unknown rule panics at startup. Rules that tags can't express go in a `Validate` method:
 
 ```go
 type CreateReq struct {
-	URL  string `json:"url" validate:"required,url"`
+	URL  string `json:"url" validate:"required,http_url"`
 	Code string `json:"code" validate:"omitempty,min=4,max=16"`
 }
 
@@ -97,14 +97,26 @@ admin := api.Group(roleKey.Option("admin"))
 admin.Handle("links.purge", Purge)
 ```
 
+## Headers and redirects
+
+A result sets headers of the response with fields tagged `header`, and a redirect is a status and a `Location`:
+
+```go
+type FollowRes struct {
+	URL string `json:"url" header:"Location"` // JSON-RPC gets it as a member
+}
+
+api.Handle("links.follow", Follow, rest.Route("GET /{code}"), rest.Status(http.StatusFound))
+```
+
 ## Middleware and logs
 
-HTTP middleware is `func(http.Handler) http.Handler`, and `middleware.Chain` applies it, the first outermost:
+HTTP middleware is `func(http.Handler) http.Handler`, and `middleware.Chain` applies it, the first outermost. `rest.ProblemHandler` makes the 404 and 405 of the mux problems too:
 
 ```go
 slog.SetDefault(slog.New(tyr.NewLogHandler(slog.NewJSONHandler(os.Stderr, nil))))
 
-handler := middleware.Chain(mux,
+handler := middleware.Chain(rest.ProblemHandler(mux),
 	middleware.RequestID(),
 	middleware.Logger(slog.Default()),
 	middleware.Recover(slog.Default()),
