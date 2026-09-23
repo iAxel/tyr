@@ -1,6 +1,6 @@
 // Command shortlink is a URL shortener built on tyr: a small service with
-// an in-memory store, served over REST, written the way a user of tyr
-// would write it, to find what the framework lacks.
+// an in-memory store, served over REST and JSON-RPC, written the way a user
+// of tyr would write it, to find what the framework lacks.
 //
 //	SHORTLINK_ADMIN_TOKEN=secret go run ./examples/shortlink -addr :8080
 //
@@ -8,6 +8,8 @@
 //	curl -i localhost:8080/links/<code>
 //	curl -i localhost:8080/<code>
 //	curl -i -X DELETE localhost:8080/links/<code> -H 'Authorization: Bearer secret'
+//	curl -i localhost:8080/rpc -H 'Content-Type: application/json' -H 'Authorization: Bearer secret' \
+//		-d '{"jsonrpc":"2.0","method":"links.purge","params":{"host":"go.dev"},"id":1}'
 package main
 
 import (
@@ -26,6 +28,7 @@ import (
 	"github.com/iaxel/tyr/examples/shortlink/authz"
 	"github.com/iaxel/tyr/examples/shortlink/links"
 	"github.com/iaxel/tyr/examples/shortlink/store"
+	"github.com/iaxel/tyr/jsonrpc"
 	"github.com/iaxel/tyr/middleware"
 	"github.com/iaxel/tyr/rest"
 )
@@ -97,6 +100,7 @@ func newAPI(svc *links.Service, logger *slog.Logger) *tyr.API {
 func newServer(addr string, api *tyr.API, callers map[string]authz.Caller, logger *slog.Logger) *http.Server {
 	mux := http.NewServeMux()
 	rest.Mount(mux, api, rest.Challenge(`Bearer realm="shortlink"`))
+	mux.Handle("POST /rpc", jsonrpc.Handler(api))
 
 	csrf := http.NewCrossOriginProtection()
 	csrf.SetDenyHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

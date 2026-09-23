@@ -1,0 +1,1 @@
+{"jsonrpc":"2.0","error":{"code":-32602,"message":"validation failed","data":{"kind":"invalid_argument","details":[{"pointer":"/code","detail":"only a-z, 0-9 and '-'"}]}},"id":1}

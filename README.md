@@ -13,13 +13,13 @@ func main() {
 
 	mux := http.NewServeMux()
 	rest.Mount(mux, api)
-	// v0.2.0: mux.Handle("POST /rpc", jsonrpc.Handler(api))
+	mux.Handle("POST /rpc", jsonrpc.Handler(api))
 
 	log.Fatal(http.ListenAndServe(":8080", mux))
 }
 ```
 
-tyr serves typed operations over `net/http`. A handler is a plain function, `func(ctx, Req) (Res, error)`, with no HTTP types and no context of its own. tyr decodes the request (the JSON body, then the fields tagged `path`, `query` or `header`), validates it, calls the handler and encodes the result or the error. The operation has a name, `links.get`: REST serves it at its route, and JSON-RPC, in v0.2.0, will serve the same operation by name.
+tyr serves typed operations over `net/http`. A handler is a plain function, `func(ctx, Req) (Res, error)`, with no HTTP types and no context of its own. tyr decodes the request (the JSON body, then the fields tagged `path`, `query` or `header`), validates it, calls the handler and encodes the result or the error. The operation has a name, `links.get`: REST serves it at its route, and JSON-RPC by that name.
 
 ## Coming from NestJS, Hono or Go
 
@@ -133,6 +133,27 @@ type FollowRes struct {
 api.Handle("links.follow", Follow, rest.Route("GET /{code}"), rest.Status(http.StatusFound))
 ```
 
+## JSON-RPC
+
+`jsonrpc.Handler` serves the same operations over JSON-RPC 2.0, with the same interceptors, validation and errors. The method is the name of the operation, and params are its request, by name:
+
+```sh
+curl localhost:8080/rpc -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","method":"links.get","params":{"code":"go"},"id":1}'
+```
+
+```json
+{"jsonrpc":"2.0","result":{"code":"go","url":"https://go.dev"},"id":1}
+```
+
+The error of an operation has its kind in `data`, and its code is the HTTP status that REST sends for the kind, or -32602 for `invalid_argument`, with the violations that REST sends:
+
+```json
+{"jsonrpc":"2.0","error":{"code":404,"message":"link not found","data":{"kind":"not_found"}},"id":1}
+```
+
+A batch runs up to 8 calls at a time, and a notification, a call without an id, gets no response.
+
 ## Middleware and logs
 
 HTTP middleware is `func(http.Handler) http.Handler`, and `middleware.Chain` applies it, the first outermost. `rest.ProblemHandler` makes the 404 and 405 of the mux problems too:
@@ -162,7 +183,7 @@ There is no logger in the context: code logs with `slog.InfoContext(ctx, ...)`, 
 
 ## Example
 
-[`examples/shortlink`](examples/shortlink) is a small URL shortener built on tyr, the way a user would build it: an in-memory store, validation, `MapError`, authorization with an interceptor, middleware, graceful shutdown and end-to-end tests.
+[`examples/shortlink`](examples/shortlink) is a small URL shortener built on tyr, the way a user would build it: an in-memory store, REST and JSON-RPC, validation, `MapError`, authorization with an interceptor, middleware, graceful shutdown and end-to-end tests.
 
 ## Install
 
@@ -174,9 +195,8 @@ tyr needs Go 1.27, for generic methods. With `GOTOOLCHAIN=auto`, the default, th
 
 ## Status
 
-v0.1: REST. The API may change until v1. Next:
+v0.2: REST and JSON-RPC 2.0. The API may change until v1. Next:
 
-- v0.2: JSON-RPC 2.0, the same operations at `POST /rpc`
 - v0.3: contracts (`Define`), a typed client, an in-process client for tests
 - then: JSON Schema, OpenAPI 3.1 and OpenRPC from the same types; OpenTelemetry, timeouts, CORS and a go-playground adapter
 

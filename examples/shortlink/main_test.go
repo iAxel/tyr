@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"io"
 	"log/slog"
 	"maps"
@@ -30,7 +29,6 @@ const (
 
 // service is the service under test.
 type service struct {
-	api    *tyr.API
 	client *http.Client
 	logs   *logs
 }
@@ -50,7 +48,7 @@ func start(t *testing.T) *service {
 	// Show redirects to the test instead of following them: the client of
 	// the test server sends requests to every host to the service.
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	return &service{api: api, client: client, logs: logs}
+	return &service{client: client, logs: logs}
 }
 
 // do sends a request, with a JSON body unless body is empty and with the
@@ -290,6 +288,65 @@ func TestLogs(t *testing.T) {
 	})
 }
 
+func TestRPC(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := start(t)
+		const link = `{"code":"go-docs","url":"https://go.dev/doc/","created_at":"2000-01-01T00:00:00Z"}`
+
+		// The operations of REST, by name, with the same store.
+		tests := []struct {
+			name string
+			call string
+			want string
+		}{
+			{
+				name: "create",
+				call: `{"jsonrpc":"2.0","method":"links.create","params":{"url":"https://go.dev/doc/","code":"go-docs"},"id":1}`,
+				want: `{"jsonrpc":"2.0","result":` + link + `,"id":1}`,
+			},
+			{
+				// REST redirects to the link, JSON-RPC returns it.
+				name: "follow",
+				call: `{"jsonrpc":"2.0","method":"links.follow","params":{"code":"go-docs"},"id":2}`,
+				want: `{"jsonrpc":"2.0","result":{"url":"https://go.dev/doc/"},"id":2}`,
+			},
+			{
+				name: "batch",
+				call: `[{"jsonrpc":"2.0","method":"links.get","params":{"code":"go-docs"},"id":3},` +
+					`{"jsonrpc":"2.0","method":"links.get","params":{"code":"nope"},"id":4}]`,
+				want: `[{"jsonrpc":"2.0","result":` + link + `,"id":3},` +
+					`{"jsonrpc":"2.0","error":{"code":404,"message":"link not found","data":{"kind":"not_found"}},"id":4}]`,
+			},
+		}
+		for _, tt := range tests {
+			if resp, body := s.do(t, "POST", "/rpc", tt.call); resp.StatusCode != http.StatusOK || body != tt.want {
+				t.Errorf("%s = %d %s, want 200 %s", tt.name, resp.StatusCode, body, tt.want)
+			}
+		}
+		if resp, body := s.do(t, "GET", "/links/go-docs", ""); resp.StatusCode != http.StatusOK || body != link {
+			t.Errorf("get over REST = %d %s, want 200 %s", resp.StatusCode, body, link)
+		}
+	})
+}
+
+func TestRPCLogs(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := start(t)
+		resp, _ := s.do(t, "POST", "/rpc", `{"jsonrpc":"2.0","method":"links.get","params":{"code":"nope"},"id":1}`)
+		synctest.Wait()
+
+		// Every call has the route of the endpoint; the access record has
+		// the operation too, which jsonrpc records.
+		want := []record{{msg: "middleware: request", attrs: map[string]string{
+			"request_id": resp.Header.Get("X-Request-ID"), "method": "POST", "route": "POST /rpc", "operation": "links.get",
+			"status": "200", "duration": "0s",
+		}}}
+		if got := s.logs.get(); !slices.EqualFunc(got, want, equalRecords) {
+			t.Errorf("logged %+v, want %+v", got, want)
+		}
+	})
+}
+
 func TestPurge(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		s := start(t)
@@ -303,26 +360,26 @@ func TestPurge(t *testing.T) {
 			}
 		}
 
-		// Purge has no REST route, and M2 has no JSON-RPC to serve it: call
-		// it in-process, as a transport would.
-		purge := operation(t, s.api, "links.purge")
-		call := func(ctx context.Context) (any, error) {
-			return purge.Call(ctx, func(dst any) error {
-				*dst.(*links.PurgeReq) = links.PurgeReq{Host: "evil.example"}
-				return nil
-			})
+		// Purge has no REST route: JSON-RPC serves it, and the interceptor
+		// authorizes it as it would over REST.
+		const purge = `{"jsonrpc":"2.0","method":"links.purge","params":{"host":"evil.example"},"id":1}`
+		tests := []struct {
+			name  string
+			token string
+			want  string
+		}{
+			{"without a token", "", `{"jsonrpc":"2.0","error":{"code":401,"message":"a valid bearer token is required","data":{"kind":"unauthenticated"}},"id":1}`},
+			{"by a user", userToken, `{"jsonrpc":"2.0","error":{"code":403,"message":"links.purge requires the role admin","data":{"kind":"permission_denied"}},"id":1}`},
+			{"by the admin", adminToken, `{"jsonrpc":"2.0","result":{"purged":2},"id":1}`},
 		}
-		ctx := t.Context()
-		if _, err := call(ctx); !hasKind(err, tyr.KindUnauthenticated) {
-			t.Errorf("purge without a caller: error = %v, want unauthenticated", err)
-		}
-		user := authz.WithCaller(ctx, authz.Caller{Name: "user"})
-		if _, err := call(user); !hasKind(err, tyr.KindPermissionDenied) {
-			t.Errorf("purge by a user: error = %v, want permission_denied", err)
-		}
-		admin := authz.WithCaller(ctx, authz.Caller{Name: "admin", Roles: []string{"admin"}})
-		if res, err := call(admin); err != nil || res != (links.PurgeRes{Purged: 2}) {
-			t.Errorf("purge by the admin = %v, %v; want 2 purged", res, err)
+		for _, tt := range tests {
+			var header []string
+			if tt.token != "" {
+				header = []string{"Authorization", "Bearer " + tt.token}
+			}
+			if resp, body := s.do(t, "POST", "/rpc", purge, header...); resp.StatusCode != http.StatusOK || body != tt.want {
+				t.Errorf("purge %s = %d %s, want 200 %s", tt.name, resp.StatusCode, body, tt.want)
+			}
 		}
 
 		for code, status := range map[string]int{"evil-a": http.StatusNotFound, "evil-b": http.StatusNotFound, "go-dev": http.StatusOK} {
@@ -392,24 +449,6 @@ func TestShutdown(t *testing.T) {
 	if _, err := net.Dial("tcp", ln.Addr().String()); err == nil {
 		t.Error("the service still accepts connections")
 	}
-}
-
-// operation returns the operation of api with the name.
-func operation(t *testing.T, api *tyr.API, name string) *tyr.Operation {
-	t.Helper()
-	for op := range api.Operations() {
-		if op.Name() == name {
-			return op
-		}
-	}
-	t.Fatalf("no operation %s", name)
-	return nil
-}
-
-// hasKind reports whether err is a *tyr.Error of the kind k.
-func hasKind(err error, k tyr.Kind) bool {
-	e, ok := errors.AsType[*tyr.Error](err)
-	return ok && e.Kind == k
 }
 
 // logs is a slog.Handler that keeps the records it gets.

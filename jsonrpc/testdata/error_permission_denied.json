@@ -1,0 +1,1 @@
+{"jsonrpc":"2.0","error":{"code":403,"message":"admins only","data":{"kind":"permission_denied"}},"id":1}
