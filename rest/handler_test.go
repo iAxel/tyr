@@ -74,7 +74,7 @@ func do(h http.Handler, method, target, contentType, body string, header ...stri
 type updateReq struct {
 	Owner string `json:"owner" path:"owner"`
 	Name  string `json:"name"`
-	Limit int    `json:"limit" query:"limit"`
+	Limit int64  `json:"limit" query:"limit"` // int64: the range in errors is the same on every platform
 	Tags  []int  `json:"tags" query:"tag"`
 	Prio  uint8  `json:"prio" header:"X-Priority"`
 	Page  *int   `json:"page" query:"page"`
