@@ -25,11 +25,11 @@ tyr serves typed operations over `net/http`. A handler is a plain function, `fun
 
 | tyr | NestJS / Hono | What a Gopher already knows |
 |---|---|---|
-| `func(ctx, Req) (Res, error)` | controller method returning a value | gRPC service method, same signature |
+| `func(ctx, Req) (Res, error)` | controller method returning a value | gRPC service method, same shape |
 | `validate:"required,min=4"` | DTO + class-validator | go-playground/validator, Gin's `binding` |
 | `Interceptor` + `MetaKey` | Interceptor, Guard + decorator | gRPC interceptor, context key |
 | `MapError` | ExceptionFilter, `app.onError` | Echo's `HTTPErrorHandler` |
-| `Define` + client | tRPC, Hono RPC, Eden | gRPC proto contract, without codegen |
+| `Define` + client (v0.3) | tRPC, Hono RPC, Eden | gRPC proto contract, without codegen |
 
 ## Errors
 
@@ -43,7 +43,7 @@ return nil, tyr.NotFound("link %q not found", req.Code)
 {"type":"about:blank","title":"Not Found","status":404,"detail":"link \"x\" not found","kind":"not_found"}
 ```
 
-Errors of other packages, such as a store's, need no tyr import there: `MapError` translates them. Anything left untranslated reaches the client as an internal error and goes to the log, with its cause.
+Errors of other packages, such as a store's, need no tyr import there: `MapError` translates them. Anything left untranslated reaches the client as an internal error and goes to the log, with its cause. The client learns no more of an internal error than `"internal error"`: the message of a `tyr.Internal` goes to the log too.
 
 ```go
 api.MapError(func(err error) error {
@@ -81,20 +81,44 @@ A failed check is a 400 with a JSON pointer per field:
 
 ## Interceptors and metadata
 
-Interceptors run around every operation, over every transport, so authorization belongs there rather than in the middleware of a route. A `MetaKey` attaches typed metadata to operations, for interceptors to read:
+Interceptors run around every operation, over every transport, so authorization belongs there rather than in the middleware of a route. A `MetaKey` attaches typed metadata to operations, for interceptors to read. Who the caller is comes from the HTTP request, so middleware finds that out and puts the caller in the context, under a typed key of `ctxkey`:
 
 ```go
+var callerKey = ctxkey.New[Caller]("caller")
+
+// authenticate is HTTP middleware: it reads the request.
+func authenticate(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if c, ok := callerOf(r.Header.Get("Authorization")); ok {
+			r = r.WithContext(callerKey.Set(r.Context(), c))
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 var roleKey = tyr.NewMetaKey[string]("role")
 
+// The interceptor authorizes, over every transport.
 api.Use(func(ctx context.Context, op *tyr.Operation, req any, next tyr.Invoker) (any, error) {
-	if role, ok := roleKey.Get(op); ok && !hasRole(ctx, role) {
+	role, ok := roleKey.Get(op)
+	if !ok {
+		return next(ctx, req)
+	}
+	c, ok := callerKey.Get(ctx)
+	if !ok {
+		return nil, tyr.Unauthenticated("log in first")
+	}
+	if !slices.Contains(c.Roles, role) {
 		return nil, tyr.PermissionDenied("%s requires the role %s", op.Name(), role)
 	}
 	return next(ctx, req)
 })
 
 admin := api.Group(roleKey.Option("admin"))
-admin.Handle("links.purge", Purge)
+admin.Handle("links.delete", Delete, rest.Route("DELETE /links/{code}"))
+
+// RFC 9110 requires a WWW-Authenticate challenge on every 401.
+rest.Mount(mux, api, rest.Challenge(`Bearer realm="links"`))
 ```
 
 ## Headers and redirects
@@ -118,11 +142,14 @@ slog.SetDefault(slog.New(tyr.NewLogHandler(slog.NewJSONHandler(os.Stderr, nil)))
 
 handler := middleware.Chain(rest.ProblemHandler(mux),
 	middleware.RequestID(),
+	authenticate, // above Logger, see below
 	middleware.Logger(slog.Default()),
 	middleware.Recover(slog.Default()),
 	http.NewCrossOriginProtection().Handler,
 )
 ```
+
+Logger reads the route from the request it passes on, where the mux sets it. `authenticate` passes on another request, with the caller in its context, so it goes above Logger: below it, it would hide the route from Logger, which warns once when a route goes missing.
 
 There is no logger in the context: code logs with `slog.InfoContext(ctx, ...)`, and `tyr.NewLogHandler` adds the request ID and the operation of the context to every record.
 
