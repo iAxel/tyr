@@ -1,11 +1,13 @@
 package middleware_test
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -128,5 +130,61 @@ func TestNilLogger(t *testing.T) {
 	got := logs.get()
 	if len(got) != 2 || got[0].msg != "middleware: panic" || got[1].msg != "middleware: request" {
 		t.Errorf("the default logger got %+v, want middleware: panic and middleware: request", got)
+	}
+}
+
+func TestLoggerWarnsOfHiddenRoute(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /links/{code}", func(w http.ResponseWriter, r *http.Request) {})
+	type key struct{}
+	withValue := func(next http.Handler) http.Handler { // passes on another request
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), key{}, 1)))
+		})
+	}
+	tests := []struct {
+		name    string
+		below   []func(http.Handler) http.Handler // the middleware under Logger
+		method  string
+		target  string
+		header  []string
+		warning bool
+	}{
+		{name: "hidden route", below: []func(http.Handler) http.Handler{withValue}, method: "GET", target: "/links/go", warning: true},
+		{name: "route", method: "GET", target: "/links/go"},
+		{name: "no route for the path", method: "GET", target: "/nowhere"},
+		{name: "method not allowed", method: "POST", target: "/links/go"},
+		{
+			name: "rejected under Logger", below: []func(http.Handler) http.Handler{http.NewCrossOriginProtection().Handler},
+			method: "POST", target: "/links/go", header: []string{"Sec-Fetch-Site", "cross-site"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logs := &logs{}
+			h := middleware.Chain(mux, append([]func(http.Handler) http.Handler{middleware.Logger(slog.New(logs))}, tt.below...)...)
+			for range 2 {
+				req := httptest.NewRequest(tt.method, tt.target, nil)
+				if tt.header != nil {
+					req.Header.Set(tt.header[0], tt.header[1])
+				}
+				h.ServeHTTP(httptest.NewRecorder(), req)
+			}
+
+			// Once per Logger, at most.
+			var warnings []record
+			for _, r := range logs.get() {
+				if r.level == slog.LevelWarn {
+					warnings = append(warnings, r)
+				}
+			}
+			want := 0
+			if tt.warning {
+				want = 1
+			}
+			if len(warnings) != want || want == 1 && (warnings[0].msg != "middleware: request without a route" || !strings.Contains(warnings[0].attrs["hint"], "put it above Logger")) {
+				t.Errorf("warnings = %+v, want %d about a request without a route", warnings, want)
+			}
+		})
 	}
 }

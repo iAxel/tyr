@@ -3,6 +3,7 @@ package middleware
 import (
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -23,8 +24,12 @@ import (
 // The mux sets the route in the request it gets, and Logger reads it from
 // the request it passes on, once the handler is done. A middleware between
 // them that passes on another request, as [http.Request.WithContext]
-// makes, hides the route from Logger.
+// makes, hides the route from Logger. So when a request succeeds, with a
+// 2xx or 3xx status, without a route, Logger warns once, at the first such
+// request: "middleware: request without a route", with a hint. Requests
+// that a mux or a middleware below Logger rejects have no route anyway.
 func Logger(l *slog.Logger) func(http.Handler) http.Handler {
+	var warned sync.Once // of a request without a route
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
@@ -48,6 +53,13 @@ func Logger(l *slog.Logger) func(http.Handler) http.Handler {
 					attrs = append(attrs, slog.Bool("aborted", true))
 				}
 				logger(l).LogAttrs(r.Context(), slog.LevelInfo, "middleware: request", attrs...)
+				if returned && !state.hijacked && r.Pattern == "" && status >= 200 && status < 400 {
+					warned.Do(func() {
+						logger(l).WarnContext(r.Context(), "middleware: request without a route", "hint",
+							"a middleware between Logger and the ServeMux passes on another request, "+
+								"as r.WithContext makes, and hides the route: put it above Logger")
+					})
+				}
 			}()
 			next.ServeHTTP(ww, r)
 			returned = true
