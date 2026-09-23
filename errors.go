@@ -4,6 +4,7 @@ import (
 	"encoding/json/jsontext"
 	"fmt"
 	"strconv"
+	"strings"
 )
 
 // Kind classifies an [Error] independently of any transport. The kinds
@@ -85,6 +86,31 @@ func (k Kind) String() string {
 // [Kind.String], so that JSON and log output show a kind by its name.
 func (k Kind) MarshalText() ([]byte, error) {
 	return []byte(k.String()), nil
+}
+
+// UnmarshalText implements [encoding.TextUnmarshaler]: it sets k to the
+// kind that text names, as [Kind.String] names it, so that a client can
+// tell the kind of an error it got. Like MarshalText, it takes an unknown
+// kind as "Kind(42)". Other text, such as "NOT_FOUND" or "Kind(4)", is an
+// error.
+func (k *Kind) UnmarshalText(text []byte) error {
+	s := string(text)
+	for c := range numKinds {
+		if c.String() == s {
+			*k = c
+			return nil
+		}
+	}
+	if inner, ok := strings.CutPrefix(s, "Kind("); ok {
+		if digits, ok := strings.CutSuffix(inner, ")"); ok {
+			// Only as String writes it: no known kind, no leading zeros.
+			if n, err := strconv.ParseUint(digits, 10, 8); err == nil && Kind(n).String() == s {
+				*k = Kind(n)
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("tyr: unknown kind %q", s)
 }
 
 // known reports whether k is one of the kinds this package defines.

@@ -52,6 +52,37 @@ func TestKindMarshalText(t *testing.T) {
 	}
 }
 
+func TestKindUnmarshalText(t *testing.T) {
+	// Every kind reads back what MarshalText writes, unknown ones too.
+	for n := range 256 {
+		want := tyr.Kind(n)
+		text, _ := want.MarshalText()
+		var got tyr.Kind
+		if err := got.UnmarshalText(text); got != want || err != nil {
+			t.Errorf("UnmarshalText(%q) = %v, %v; want %v, <nil>", text, got, err, want)
+		}
+	}
+
+	for _, text := range []string{
+		"", "NOT_FOUND", "not-found", " not_found", "not_found ",
+		"Kind(4)",   // a known kind goes by its name
+		"Kind(042)", // not as String writes it
+		"Kind(+42)", "Kind(-1)", "Kind(256)", "Kind(42", "Kind()", "kind(42)",
+	} {
+		got := tyr.KindUnavailable
+		err := got.UnmarshalText([]byte(text))
+		if want := fmt.Sprintf("tyr: unknown kind %q", text); err == nil || err.Error() != want || got != tyr.KindUnavailable {
+			t.Errorf("UnmarshalText(%q) = %v, %v; want the kind unchanged and %q", text, got, err, want)
+		}
+	}
+
+	// JSON decoders pick the method up.
+	var got tyr.Kind
+	if err := json.Unmarshal([]byte(`"not_found"`), &got); got != tyr.KindNotFound || err != nil {
+		t.Errorf(`json.Unmarshal("not_found") = %v, %v; want not_found, <nil>`, got, err)
+	}
+}
+
 func TestConstructors(t *testing.T) {
 	tests := []struct {
 		name   string
