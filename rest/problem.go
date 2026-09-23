@@ -2,11 +2,13 @@ package rest
 
 import (
 	"context"
+	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 
 	"github.com/iaxel/tyr"
 )
@@ -109,18 +111,31 @@ func statusOf(k tyr.Kind) int {
 }
 
 // writeProblem sends p as application/problem+json, with the type and the
-// title filled in. Details that can't be encoded are a bug of the server:
-// they're logged to logger and left out.
+// title filled in. Invalid UTF-8, which a message may carry, becomes
+// U+FFFD. Details that can't be encoded are a bug of the server: they're
+// logged to logger and left out.
 func writeProblem(ctx context.Context, logger *slog.Logger, w http.ResponseWriter, p problem) {
 	p.Type, p.Title = "about:blank", http.StatusText(p.Status)
-	data, err := json.Marshal(p)
+	data, err := json.Marshal(p, jsontext.AllowInvalidUTF8(true))
 	if err != nil {
 		// Only details can fail to encode: send the problem without them.
 		logger.ErrorContext(ctx, "rest: encoding error details", "err", err)
 		p.Errors, p.Details = nil, nil
-		data, _ = json.Marshal(p)
+		if data, err = json.Marshal(p, jsontext.AllowInvalidUTF8(true)); err != nil {
+			// Unreachable: without details, p is strings and a number,
+			// and with AllowInvalidUTF8 every string encodes. The line
+			// stays so that no later change to problem can bring back a
+			// truncated body.
+			data = minimalProblem(p.Status)
+		}
 	}
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(p.Status)
 	_, _ = w.Write(data)
+}
+
+// minimalProblem returns the problem of status with only the members that
+// every problem has, written without the JSON encoder.
+func minimalProblem(status int) []byte {
+	return []byte(`{"type":"about:blank","title":"` + http.StatusText(status) + `","status":` + strconv.Itoa(status) + `}`)
 }

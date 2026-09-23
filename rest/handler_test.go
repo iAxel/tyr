@@ -337,6 +337,7 @@ func TestErrors(t *testing.T) {
 		{"internal", tyr.Internal("storage is read-only").WithDetails(expiry{}), http.StatusInternalServerError},
 		{"unmapped", errors.New("db: connection refused"), http.StatusInternalServerError},
 		{"unknown kind", &tyr.Error{Kind: tyr.Kind(42), Message: "odd"}, http.StatusInternalServerError},
+		{"invalid UTF-8 in the message", tyr.NotFound("link %s not found", "\xff"), http.StatusNotFound},
 		{"unencodable details", tyr.Unavailable("try again later").WithDetails(make(chan int)), http.StatusServiceUnavailable},
 	}
 	for _, tt := range tests {
