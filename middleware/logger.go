@@ -5,14 +5,29 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/iaxel/tyr"
 )
 
 // Logger returns a middleware that writes a record to l at Info for every
 // request once its handler is done: "middleware: request" with the method,
-// the route (the pattern of the [http.ServeMux] that matched the request,
-// empty if none did), the status and the duration. The request ID gets
-// there from the request context, given a [tyr.NewLogHandler]. A nil l
-// means [slog.Default] as it is at the time of writing.
+// the route, the operation, if there is one, the status and the duration.
+// The request ID gets there from the request context, given a
+// [tyr.NewLogHandler]. A nil l means [slog.Default] as it is at the time of
+// writing.
+//
+// The route and the operation are those the transport records in the
+// [tyr.RequestInfo] that Logger puts in the request context, so middleware
+// between Logger and the transport may pass on another request, as
+// [http.Request.WithContext] makes. A handler outside tyr records nothing:
+// its route is the pattern of the [http.ServeMux] that matched the request,
+// empty if none did, which the mux sets in the request it gets, and Logger
+// reads it from the request it passes on. Middleware in between that passes
+// on another request hides that route from Logger. So when a request
+// succeeds, with a 2xx or 3xx status, with neither a route nor an
+// operation, Logger warns once, at the first such request: "middleware:
+// request without a route", with a hint. Requests that a mux or a
+// middleware below Logger rejects have no route anyway.
 //
 // The status is the one the handler sent, or 200 if it sent none, as
 // net/http then does. A handler that took over the connection (see
@@ -20,24 +35,26 @@ import (
 // one before. A handler that didn't return, because a panic went through
 // Logger, as when [Recover] breaks the connection, gets aborted=true and the
 // status sent so far, 0 if none.
-//
-// The mux sets the route in the request it gets, and Logger reads it from
-// the request it passes on, once the handler is done. A middleware between
-// them that passes on another request, as [http.Request.WithContext]
-// makes, hides the route from Logger. So when a request succeeds, with a
-// 2xx or 3xx status, without a route, Logger warns once, at the first such
-// request: "middleware: request without a route", with a hint. Requests
-// that a mux or a middleware below Logger rejects have no route anyway.
 func Logger(l *slog.Logger) func(http.Handler) http.Handler {
 	var warned sync.Once // of a request without a route
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
+			ctx, info := tyr.WithRequestInfo(r.Context())
+			r = r.WithContext(ctx)
 			ww, state := wrap(w)
 			returned := false
 			defer func() {
-				attrs := make([]slog.Attr, 0, 6)
-				attrs = append(attrs, slog.String("method", r.Method), slog.String("route", r.Pattern))
+				route := info.Route()
+				if route == "" {
+					route = r.Pattern // of a handler outside tyr, unless hidden
+				}
+				op, hasOp := info.Operation()
+				attrs := make([]slog.Attr, 0, 7)
+				attrs = append(attrs, slog.String("method", r.Method), slog.String("route", route))
+				if hasOp {
+					attrs = append(attrs, slog.String("operation", op.Name()))
+				}
 				status := state.status
 				if status == 0 && returned && !state.hijacked {
 					status = http.StatusOK
@@ -53,11 +70,11 @@ func Logger(l *slog.Logger) func(http.Handler) http.Handler {
 					attrs = append(attrs, slog.Bool("aborted", true))
 				}
 				logger(l).LogAttrs(r.Context(), slog.LevelInfo, "middleware: request", attrs...)
-				if returned && !state.hijacked && r.Pattern == "" && status >= 200 && status < 400 {
+				if returned && !state.hijacked && route == "" && !hasOp && status >= 200 && status < 400 {
 					warned.Do(func() {
 						logger(l).WarnContext(r.Context(), "middleware: request without a route", "hint",
 							"a middleware between Logger and the ServeMux passes on another request, "+
-								"as r.WithContext makes, and hides the route: put it above Logger")
+								"as r.WithContext makes, and hides the route of a handler outside tyr: put it above Logger")
 					})
 				}
 			}()

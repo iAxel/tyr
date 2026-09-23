@@ -25,6 +25,7 @@ import (
 type handler struct {
 	api        *tyr.API // logs with its Logger
 	op         *tyr.Operation
+	pattern    string // that the handler is mounted at
 	binding    *plan.Binding
 	headers    *plan.Headers // that results set
 	status     int           // of a successful response
@@ -64,7 +65,7 @@ func newHandler(api *tyr.API, op *tyr.Operation, pattern string, m *mount) *hand
 		panicf(op, "%v", err)
 	}
 	h := &handler{
-		api: api, op: op, binding: b, headers: headers,
+		api: api, op: op, pattern: pattern, binding: b, headers: headers,
 		status: http.StatusOK, limit: defaultLimit, challenges: m.challenges,
 	}
 	if h.noBody = plan.NoMembers(res); h.noBody {
@@ -119,6 +120,11 @@ func panicf(op *tyr.Operation, format string, args ...any) {
 }
 
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// For middleware above, such as an access log, before anything can
+	// fail.
+	if info, ok := tyr.RequestInfoFrom(r.Context()); ok {
+		info.Record(h.pattern, h.op)
+	}
 	// The operation stays in the context after the call, for the logs.
 	ctx := tyr.WithOperation(r.Context(), h.op)
 	body, readErr := io.ReadAll(http.MaxBytesReader(w, r.Body, h.limit))

@@ -109,13 +109,13 @@ func newServer(addr string, api *tyr.API, callers map[string]authz.Caller, logge
 		// operations are.
 		Handler: middleware.Chain(rest.ProblemHandler(mux), // first = outermost
 			middleware.RequestID(),
-			// Above Logger: it passes on a request with another context,
-			// and the route the mux sets in that request wouldn't reach
-			// Logger.
-			authz.Authenticate(callers),
 			middleware.Logger(logger),
 			middleware.Recover(logger),
 			csrf.Handler,
+			// It passes on a request with another context, which Logger
+			// doesn't mind: rest records the route and the operation for
+			// it. Under Recover, its panics are recovered too.
+			authz.Authenticate(callers),
 		),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,

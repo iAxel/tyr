@@ -268,8 +268,9 @@ func TestLogs(t *testing.T) {
 		defer slog.SetDefault(slog.Default())
 		slog.SetDefault(slog.New(tyr.NewLogHandler(s.logs)))
 
-		// With a token: then Authenticate passes on a request with another
-		// context, and the access record still has the route.
+		// With a token: then Authenticate, under Logger, passes on a request
+		// with another context, and the access record still has the route
+		// and the operation, which rest records.
 		resp, _ := s.do(t, "POST", "/links", `{"url":"https://go.dev","code":"golang"}`, "Authorization", "Bearer "+adminToken)
 		synctest.Wait()
 
@@ -279,7 +280,8 @@ func TestLogs(t *testing.T) {
 		want := []record{
 			{msg: "link created", attrs: map[string]string{"request_id": id, "operation": "links.create", "code": "golang"}},
 			{msg: "middleware: request", attrs: map[string]string{
-				"request_id": id, "method": "POST", "route": "POST /links", "status": "201", "duration": "0s",
+				"request_id": id, "method": "POST", "route": "POST /links", "operation": "links.create",
+				"status": "201", "duration": "0s",
 			}},
 		}
 		if got := s.logs.get(); !slices.EqualFunc(got, want, equalRecords) {

@@ -142,14 +142,21 @@ slog.SetDefault(slog.New(tyr.NewLogHandler(slog.NewJSONHandler(os.Stderr, nil)))
 
 handler := middleware.Chain(rest.ProblemHandler(mux),
 	middleware.RequestID(),
-	authenticate, // above Logger, see below
 	middleware.Logger(slog.Default()),
 	middleware.Recover(slog.Default()),
 	http.NewCrossOriginProtection().Handler,
+	authenticate,
 )
 ```
 
-Logger reads the route from the request it passes on, where the mux sets it. `authenticate` passes on another request, with the caller in its context, so it goes above Logger: below it, it would hide the route from Logger, which warns once when a route goes missing.
+Logger writes a record per request with its route and operation, which the transport records in a `tyr.RequestInfo` in the request context. So middleware under Logger may pass on another request, as `authenticate` does to put the caller in the context. Metrics of your own read the same `RequestInfo` once the handler returns:
+
+```go
+ctx, info := tyr.WithRequestInfo(r.Context())
+next.ServeHTTP(w, r.WithContext(ctx))
+route := info.Route()
+op, ok := info.Operation()
+```
 
 There is no logger in the context: code logs with `slog.InfoContext(ctx, ...)`, and `tyr.NewLogHandler` adds the request ID and the operation of the context to every record.
 

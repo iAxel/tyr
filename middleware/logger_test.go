@@ -12,8 +12,35 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/iaxel/tyr"
 	"github.com/iaxel/tyr/middleware"
 )
+
+// transport returns a handler that records route and op in the
+// tyr.RequestInfo of the request, as a transport does.
+func transport(route string, op *tyr.Operation) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if info, ok := tyr.RequestInfoFrom(r.Context()); ok {
+			info.Record(route, op)
+		}
+	})
+}
+
+// newOperation returns an operation named name.
+func newOperation(name string) *tyr.Operation {
+	return tyr.New().Handle(name, func(ctx context.Context, req struct{}) (struct{}, error) {
+		return struct{}{}, nil
+	})
+}
+
+// withValue is a middleware that passes on another request, with a value
+// in its context, which hides the route that a ServeMux sets in it.
+func withValue(next http.Handler) http.Handler {
+	type key struct{}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), key{}, 1)))
+	})
+}
 
 func TestLogger(t *testing.T) {
 	tests := []struct {
@@ -133,17 +160,46 @@ func TestNilLogger(t *testing.T) {
 	}
 }
 
+func TestLoggerRequestInfo(t *testing.T) {
+	op := newOperation("links.get")
+	mux := http.NewServeMux()
+	mux.Handle("GET /links/{code}", transport("GET /links/{code}", op))
+
+	// Middleware above Logger reads the same RequestInfo.
+	var above *tyr.RequestInfo
+	metrics := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx, info := tyr.WithRequestInfo(r.Context())
+			above = info
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+	logs := &logs{}
+	h := middleware.Chain(mux, metrics, middleware.Logger(slog.New(logs)), withValue)
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/links/go", nil))
+
+	// withValue hides the route that the mux sets, but not the one the
+	// transport records, and there is no warning.
+	got := logs.get()
+	want := map[string]string{"method": "GET", "route": "GET /links/{code}", "operation": "links.get", "status": "200"}
+	if len(got) == 1 {
+		delete(got[0].attrs, "duration")
+	}
+	if len(got) != 1 || got[0].msg != "middleware: request" || !maps.Equal(got[0].attrs, want) {
+		t.Errorf("logged %+v, want one middleware: request with %v", got, want)
+	}
+	if op, _ := above.Operation(); above.Route() != "GET /links/{code}" || op == nil || op.Name() != "links.get" {
+		t.Errorf("the middleware above Logger read %q and %v, want the route and links.get", above.Route(), op)
+	}
+}
+
 func TestLoggerWarnsOfHiddenRoute(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /links/{code}", func(w http.ResponseWriter, r *http.Request) {})
-	type key struct{}
-	withValue := func(next http.Handler) http.Handler { // passes on another request
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), key{}, 1)))
-		})
-	}
+	mux.Handle("GET /things/{id}", transport("GET /things/{id}", newOperation("things.get")))
 	tests := []struct {
 		name    string
+		handler http.Handler                      // mux if nil
 		below   []func(http.Handler) http.Handler // the middleware under Logger
 		method  string
 		target  string
@@ -151,6 +207,8 @@ func TestLoggerWarnsOfHiddenRoute(t *testing.T) {
 		warning bool
 	}{
 		{name: "hidden route", below: []func(http.Handler) http.Handler{withValue}, method: "GET", target: "/links/go", warning: true},
+		{name: "hidden route of an operation", below: []func(http.Handler) http.Handler{withValue}, method: "GET", target: "/things/1"},
+		{name: "operation without a route", handler: transport("", newOperation("things.get")), method: "GET", target: "/things/1"},
 		{name: "route", method: "GET", target: "/links/go"},
 		{name: "no route for the path", method: "GET", target: "/nowhere"},
 		{name: "method not allowed", method: "POST", target: "/links/go"},
@@ -162,7 +220,11 @@ func TestLoggerWarnsOfHiddenRoute(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			logs := &logs{}
-			h := middleware.Chain(mux, append([]func(http.Handler) http.Handler{middleware.Logger(slog.New(logs))}, tt.below...)...)
+			var handler http.Handler = mux
+			if tt.handler != nil {
+				handler = tt.handler
+			}
+			h := middleware.Chain(handler, append([]func(http.Handler) http.Handler{middleware.Logger(slog.New(logs))}, tt.below...)...)
 			for range 2 {
 				req := httptest.NewRequest(tt.method, tt.target, nil)
 				if tt.header != nil {

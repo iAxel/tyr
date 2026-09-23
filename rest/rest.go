@@ -86,6 +86,10 @@
 // operation (see [tyr.WithOperation]), and the client gets an internal
 // error or the problem without its details.
 //
+// For middleware above it, such as an access log, the handler of an
+// operation records its route and the operation in the [tyr.RequestInfo]
+// of the request, if there is one, before anything else.
+//
 // Outside operations, [WriteError] writes an error as an operation's, and
 // [WriteProblem] a problem of the HTTP request, such as the 403 of
 // [http.CrossOriginProtection]. [ProblemHandler] makes the 404 and 405 of

@@ -410,6 +410,40 @@ func TestCanceled(t *testing.T) {
 	golden(t, "error_canceled", rec.Body.Bytes())
 }
 
+func TestRequestInfo(t *testing.T) {
+	api := newAPI()
+	op := api.Handle("things.update", func(ctx context.Context, req updateReq) (updateReq, error) {
+		return req, nil
+	}, rest.Route("POST /owners/{owner}/things"), rest.MaxBodyBytes(16))
+	mux := http.NewServeMux()
+	rest.Mount(mux, api)
+
+	tests := []struct {
+		name        string
+		contentType string
+		body        string
+		wantCode    int
+	}{
+		{"served", "application/json", `{"name":"a"}`, http.StatusOK},
+		// Recorded before anything can fail.
+		{"too large", "application/json", `{"name":"a long name"}`, http.StatusRequestEntityTooLarge},
+		{"not JSON", "text/plain", "a", http.StatusUnsupportedMediaType},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, info := tyr.WithRequestInfo(t.Context())
+			req := httptest.NewRequestWithContext(ctx, "POST", "/owners/ann/things", strings.NewReader(tt.body))
+			req.Header.Set("Content-Type", tt.contentType)
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, req)
+
+			if got, ok := info.Operation(); rec.Code != tt.wantCode || info.Route() != "POST /owners/{owner}/things" || got != op || !ok {
+				t.Errorf("%d, recorded %q and %v; want %d, the route and the operation", rec.Code, info.Route(), got, tt.wantCode)
+			}
+		})
+	}
+}
+
 func TestReadError(t *testing.T) {
 	mux := mount(t, echo)
 	req := httptest.NewRequest("POST", "/owners/ann/things", iotest.ErrReader(errors.New("connection reset")))

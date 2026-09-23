@@ -2,6 +2,7 @@ package tyr_test
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"github.com/iaxel/tyr"
@@ -70,5 +71,63 @@ func TestCallContext(t *testing.T) {
 	}
 	if op, _ := tyr.OperationFrom(got); op != list {
 		t.Error("the handler's context doesn't carry links.list")
+	}
+}
+
+func TestRequestInfo(t *testing.T) {
+	get := tyr.New().Handle("links.get", getLink)
+	list := tyr.New().Handle("links.list", getLink)
+
+	if info, ok := tyr.RequestInfoFrom(t.Context()); info != nil || ok {
+		t.Errorf("RequestInfoFrom(context without one) = %v, %t; want <nil>, false", info, ok)
+	}
+	ctx, info := tyr.WithRequestInfo(t.Context())
+	if got, ok := tyr.RequestInfoFrom(ctx); got != info || !ok {
+		t.Errorf("RequestInfoFrom(WithRequestInfo(ctx)) = %p, %t; want %p, true", got, ok, info)
+	}
+	if op, ok := info.Operation(); info.Route() != "" || op != nil || ok {
+		t.Errorf("Route(), Operation() before Record = %q, %v, %t; want \"\", <nil>, false", info.Route(), op, ok)
+	}
+
+	// Middleware below gets the same one, and its context as it is.
+	below := tyr.WithRequestID(ctx, "req-1")
+	if got, again := tyr.WithRequestInfo(below); got != below || again != info {
+		t.Error("WithRequestInfo(context that carries one) made another")
+	}
+
+	// Only the first Record counts.
+	info.Record("GET /links/{code}", get)
+	info.Record("POST /rpc", list)
+	if op, ok := info.Operation(); info.Route() != "GET /links/{code}" || op != get || !ok {
+		t.Errorf("Route(), Operation() = %q, %v, %t; want %q, links.get, true", info.Route(), op, ok, "GET /links/{code}")
+	}
+}
+
+func TestRequestInfoWithoutOperation(t *testing.T) {
+	// A JSON-RPC batch runs several operations at one route.
+	_, info := tyr.WithRequestInfo(t.Context())
+	info.Record("POST /rpc", nil)
+	info.Record("POST /rpc", tyr.New().Handle("links.get", getLink))
+	if op, ok := info.Operation(); info.Route() != "POST /rpc" || op != nil || ok {
+		t.Errorf("Route(), Operation() = %q, %v, %t; want %q, <nil>, false", info.Route(), op, ok, "POST /rpc")
+	}
+}
+
+func TestRequestInfoConcurrent(t *testing.T) {
+	// Middleware may read it while the transport records, as when
+	// http.TimeoutHandler gives up on a handler that goes on.
+	op := tyr.New().Handle("links.get", getLink)
+	_, info := tyr.WithRequestInfo(t.Context())
+	var wg sync.WaitGroup
+	for range 4 {
+		wg.Go(func() { info.Record("GET /links/{code}", op) })
+		wg.Go(func() {
+			_ = info.Route()
+			_, _ = info.Operation()
+		})
+	}
+	wg.Wait()
+	if got, _ := info.Operation(); info.Route() != "GET /links/{code}" || got != op {
+		t.Errorf("Route(), Operation() = %q, %v; want the recorded ones", info.Route(), got)
 	}
 }

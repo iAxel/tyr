@@ -16,6 +16,10 @@
 // the ID, given a logger with a [tyr.NewLogHandler]. Logger goes above
 // Recover to see that 500. Recover goes below both, over everything that
 // may panic; [tyr.Operation.Call] recovers the panics of operations itself.
+// Middleware of your own may go below all three even if it passes on
+// another request, as authentication does to put the caller in the
+// context: Logger gets the route and the operation of a request from the
+// transport, see [tyr.RequestInfo].
 //
 // Authorization doesn't belong in middleware: an operation served both
 // over REST and JSON-RPC would get past a check on its route. Check it in
