@@ -82,6 +82,10 @@
 //
 //	c := jsonrpc.NewClient("http://links.internal/rpc", &http.Client{Timeout: 5 * time.Second})
 //	link, err := c.Call(ctx, contract.GetLink, contract.GetLinkReq{Code: "go"})
+//
+// [InProcess] serves the calls of a client with a handler in memory, with
+// the whole lifecycle of a call, for tests and for calls within one
+// program.
 package jsonrpc
 
 import (

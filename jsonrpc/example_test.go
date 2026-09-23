@@ -2,6 +2,7 @@ package jsonrpc_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,42 @@ import (
 	"github.com/iaxel/tyr/jsonrpc"
 	"github.com/iaxel/tyr/rest"
 )
+
+func ExampleClient() {
+	// The contract, which the server and its clients share.
+	type GetLinkReq struct {
+		Code string `json:"code" validate:"required"`
+	}
+	type Link struct {
+		Code string `json:"code"`
+		URL  string `json:"url"`
+	}
+	getLink := tyr.Define[GetLinkReq, *Link]("links.get")
+
+	api := tyr.New()
+	api.Implement(getLink, func(ctx context.Context, req GetLinkReq) (*Link, error) {
+		if req.Code != "go" {
+			return nil, tyr.NotFound("link %q not found", req.Code)
+		}
+		return &Link{Code: "go", URL: "https://go.dev"}, nil
+	})
+
+	// In memory here; another program would pass an http.Client with a
+	// timeout and the URL of the service.
+	c := jsonrpc.NewClient("http://links/rpc", jsonrpc.InProcess(jsonrpc.Handler(api)))
+	for _, code := range []string{"go", "gone", ""} {
+		link, err := c.Call(context.Background(), getLink, GetLinkReq{Code: code})
+		if e, ok := errors.AsType[*tyr.Error](err); ok {
+			fmt.Println(e.Kind, e.Message, e.Details)
+			continue
+		}
+		fmt.Println(link.URL, err)
+	}
+	// Output:
+	// https://go.dev <nil>
+	// not_found link "gone" not found <nil>
+	// invalid_argument validation failed [{"pointer":"/code","detail":"is required"}]
+}
 
 func ExampleHandler() {
 	type GetLinkReq struct {

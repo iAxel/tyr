@@ -34,6 +34,15 @@ import (
 // own, such as Authorization, go through the Transport of the http.Client,
 // as with golang.org/x/oauth2. A Client is safe for concurrent use.
 //
+// A generic method can't be in an interface, so code that calls a service
+// declares the small interface it needs, over a Client, and its tests run
+// the service in the same process, with a fake implementation of the
+// contract and a client of [InProcess]:
+//
+//	api := tyr.New()
+//	api.Implement(contract.GetLink, fakeGetLink)
+//	c := jsonrpc.NewClient("http://links/rpc", jsonrpc.InProcess(jsonrpc.Handler(api)))
+//
 // # Errors of another service
 //
 // A handler that calls another service may return the error of Call as it
