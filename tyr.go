@@ -5,6 +5,19 @@
 // passed through the interceptors (see [API.Use]) and validated, and an
 // error of the handler becomes an [Error] of a [Kind].
 //
+// # Contracts
+//
+// An operation may be defined apart from its handler, as a contract that
+// the server and its clients share, such as the typed client of
+// [github.com/iaxel/tyr/jsonrpc]:
+//
+//	var GetLink = tyr.Define[GetLinkReq, *Link]("links.get", rest.Route("GET /links/{code}"))
+//
+//	api.Implement(GetLink, links.Get)
+//
+// The compiler checks that the handler fits the contract, as it checks the
+// calls of clients. [API.Handle] is short for Implement(Define(...)).
+//
 // # Validation
 //
 // [Operation.Call] checks a request against the validate tags of its
@@ -45,7 +58,8 @@ import (
 type Handler[Req, Res any] = func(ctx context.Context, req Req) (Res, error)
 
 // API is a set of operations. Create it with [New], register operations
-// with [API.Handle] and mount it on transports, which [API.Seal] it.
+// with [API.Handle] or [API.Implement] and mount it on transports, which
+// [API.Seal] it.
 //
 // Configure an API from a single goroutine before serving it. Once sealed,
 // it is read-only, and its operations may be called concurrently.
@@ -108,10 +122,11 @@ func (a *API) MapError(fn func(error) error) {
 }
 
 // Handle registers h as an operation with the given name and returns the
-// operation. The name is one or more dot-separated segments of ASCII
-// letters, digits, '_' and '-', such as "links.get"; the first segment
-// can't be "rpc", which JSON-RPC reserves. Req must be a struct type, and
-// its validate tags must be valid; see the package documentation.
+// operation; it is short for Implement(Define(name, opts...), h). The name
+// is one or more dot-separated segments of ASCII letters, digits, '_' and
+// '-', such as "links.get"; the first segment can't be "rpc", which
+// JSON-RPC reserves. Req must be a struct type, and its validate tags must
+// be valid; see the package documentation.
 //
 // opts configure the operation, e.g. with a route for a transport, and
 // apply in order. Handle panics if the name is invalid or already taken,
@@ -119,7 +134,21 @@ func (a *API) MapError(fn func(error) error) {
 // tag, Req has no Validate method because those of structs it embeds
 // conflict (see [Validator]), or the API is sealed.
 func (a *API) Handle[Req, Res any](name string, h Handler[Req, Res], opts ...OpOption) *Operation {
-	return register(a, name, h, nil, opts)
+	call := fmt.Sprintf("Handle(%q)", name)
+	return register(a, call, define[Req, Res](call, name, opts), h, nil)
+}
+
+// Implement registers h as the handler of the operation that op defines,
+// with the options of op, and returns the operation. The compiler checks
+// that h fits op, so an implementation can't drift from the contract its
+// clients call.
+//
+// Implement panics if op is the zero Op, its name is already taken, h is
+// nil, Req has an invalid validate tag or no Validate method because those
+// of structs it embeds conflict (see [Validator]), or the API is sealed.
+// [Define] has checked the rest.
+func (a *API) Implement[Req, Res any](op Op[Req, Res], h Handler[Req, Res]) *Operation {
+	return implement(a, op, h, nil)
 }
 
 // Group returns a group whose operations get opts before their own
@@ -192,7 +221,14 @@ type Group struct {
 
 // Handle is like [API.Handle] but applies the group's options before opts.
 func (g *Group) Handle[Req, Res any](name string, h Handler[Req, Res], opts ...OpOption) *Operation {
-	return register(g.api, name, h, g.opts, opts)
+	call := fmt.Sprintf("Handle(%q)", name)
+	return register(g.api, call, define[Req, Res](call, name, opts), h, g.opts)
+}
+
+// Implement is like [API.Implement] but applies the group's options before
+// those of op.
+func (g *Group) Implement[Req, Res any](op Op[Req, Res], h Handler[Req, Res]) *Operation {
+	return implement(g.api, op, h, g.opts)
 }
 
 // Group returns a nested group, whose options go after g's.
@@ -200,27 +236,25 @@ func (g *Group) Group(opts ...OpOption) *Group {
 	return &Group{api: g.api, opts: slices.Concat(g.opts, opts)}
 }
 
-// register implements API.Handle and Group.Handle.
-func register[Req, Res any](a *API, name string, h Handler[Req, Res], groupOpts, opts []OpOption) *Operation {
-	call := fmt.Sprintf("Handle(%q)", name)
-	a.checkOpen(call)
-	if problem := checkName(name); problem != "" {
-		panic("tyr: " + call + ": " + problem)
+// implement implements API.Implement and Group.Implement.
+func implement[Req, Res any](a *API, def Op[Req, Res], h Handler[Req, Res], groupOpts []OpOption) *Operation {
+	if def.name == "" {
+		panic("tyr: Implement: zero Op, make one with Define")
 	}
-	if a.names[name] {
+	return register(a, fmt.Sprintf("Implement(%q)", def.name), def, h, groupOpts)
+}
+
+// register registers h as the handler of def, a checked Op, with groupOpts
+// before the options of def; call names the call in panics.
+func register[Req, Res any](a *API, call string, def Op[Req, Res], h Handler[Req, Res], groupOpts []OpOption) *Operation {
+	a.checkOpen(call)
+	if a.names[def.name] {
 		panic("tyr: " + call + ": duplicate operation name")
 	}
 	if h == nil {
 		panic("tyr: " + call + ": nil handler")
 	}
 	t := reflect.TypeFor[Req]()
-	if t.Kind() != reflect.Struct {
-		msg := fmt.Sprintf("tyr: %s: request type %v is not a struct", call, t)
-		if t.Kind() == reflect.Pointer && t.Elem().Kind() == reflect.Struct {
-			msg += fmt.Sprintf("; use %v", t.Elem())
-		}
-		panic(msg)
-	}
 	validation, err := plan.NewValidation(t)
 	if err != nil {
 		panic("tyr: " + call + ": " + err.Error())
@@ -229,15 +263,15 @@ func register[Req, Res any](a *API, name string, h Handler[Req, Res], groupOpts,
 		panic("tyr: " + call + ": " + conflict)
 	}
 
-	op := newOperation(a, name, h, validation)
-	for _, opt := range slices.Concat(groupOpts, opts) {
+	op := newOperation(a, def.name, h, validation)
+	for _, opt := range slices.Concat(groupOpts, def.opts) {
 		if opt == nil {
-			panic("tyr: " + call + ": nil option")
+			panic("tyr: " + call + ": nil option") // of a group: Define checked its own
 		}
 		opt(op)
 	}
 	op.registered = true
-	a.names[name] = true
+	a.names[def.name] = true
 	a.ops = append(a.ops, op)
 	return op
 }

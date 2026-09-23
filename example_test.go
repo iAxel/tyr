@@ -37,6 +37,33 @@ func ExampleNewLogHandler() {
 	// {"level":"INFO","msg":"query","request_id":"0192f5e2","operation":"links.get","db":{"rows":1}}
 }
 
+func ExampleDefine() {
+	// A contract, which the server and its clients share; it would be a
+	// package-level variable of a package of its own.
+	type GetLinkReq struct {
+		Code string `json:"code" path:"code" validate:"required"`
+	}
+	type Link struct {
+		Code string `json:"code"`
+		URL  string `json:"url"`
+	}
+	getLink := tyr.Define[GetLinkReq, *Link]("links.get", rest.Route("GET /links/{code}"))
+
+	// The server: Implement doesn't compile unless the handler fits.
+	api := tyr.New()
+	api.Implement(getLink, func(ctx context.Context, req GetLinkReq) (*Link, error) {
+		return &Link{Code: req.Code, URL: "https://go.dev"}, nil
+	})
+	mux := http.NewServeMux()
+	rest.Mount(mux, api) // at the route of the contract
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest("GET", "/links/go", nil))
+	fmt.Println(getLink.Name(), rec.Code, rec.Body)
+	// Output:
+	// links.get 200 {"code":"go","url":"https://go.dev"}
+}
+
 func ExampleOperation_Call() {
 	type GetLinkReq struct {
 		Code string `json:"code"`

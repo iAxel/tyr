@@ -157,6 +157,102 @@ func TestHandlePanics(t *testing.T) {
 	}
 }
 
+func TestImplement(t *testing.T) {
+	var applied []string
+	option := func(tag string) tyr.OpOption {
+		return func(op *tyr.Operation) { applied = append(applied, op.Name()+" "+tag) }
+	}
+	opts := []tyr.OpOption{option("contract")}
+	get := tyr.Define[getLinkReq, *link]("links.get", opts...)
+	opts[0] = option("changed") // the contract keeps its own copy
+
+	// One contract, two APIs, as a server and a test of its clients have.
+	api := tyr.New()
+	op := api.Group(option("admin")).Implement(get, getLink)
+	other := tyr.New().Implement(get, linkService{}.Get)
+
+	for _, op := range []*tyr.Operation{op, other} {
+		if op.Name() != "links.get" || op.Req() != reflect.TypeFor[getLinkReq]() || op.Res() != reflect.TypeFor[*link]() {
+			t.Errorf("operation = %s(%v) %v, want links.get(%v) %v",
+				op.Name(), op.Req(), op.Res(), reflect.TypeFor[getLinkReq](), reflect.TypeFor[*link]())
+		}
+	}
+	// The group's options go first, as with Handle.
+	want := []string{"links.get admin", "links.get contract", "links.get contract"}
+	if !slices.Equal(applied, want) {
+		t.Errorf("applied options:\n%q\nwant:\n%q", applied, want)
+	}
+	if got := slices.Collect(api.Operations()); !slices.Equal(got, []*tyr.Operation{op}) {
+		t.Errorf("Operations() = %v, want [links.get]", names(got))
+	}
+
+	res, err := other.Call(t.Context(), func(dst any) error {
+		dst.(*getLinkReq).Code = "go"
+		return nil
+	})
+	if l, ok := res.(*link); !ok || err != nil || l.URL != "https://go.dev/go" {
+		t.Errorf("Call() = %v, %v; want the link of go", res, err)
+	}
+}
+
+func TestImplementPanics(t *testing.T) {
+	get := tyr.Define[getLinkReq, *link]("links.get")
+	tests := []struct {
+		name      string
+		implement func(api *tyr.API)
+		want      string
+	}{
+		{
+			name:      "zero Op",
+			implement: func(api *tyr.API) { api.Implement(tyr.Op[getLinkReq, *link]{}, getLink) },
+			want:      "tyr: Implement: zero Op, make one with Define",
+		},
+		{
+			name:      "zero Op in a group",
+			implement: func(api *tyr.API) { api.Group().Implement(tyr.Op[getLinkReq, *link]{}, getLink) },
+			want:      "tyr: Implement: zero Op, make one with Define",
+		},
+		{
+			name: "duplicate name",
+			implement: func(api *tyr.API) {
+				api.Handle("links.get", getLink)
+				api.Implement(get, getLink)
+			},
+			want: `tyr: Implement("links.get"): duplicate operation name`,
+		},
+		{
+			name:      "nil handler",
+			implement: func(api *tyr.API) { api.Implement(get, nil) },
+			want:      `tyr: Implement("links.get"): nil handler`,
+		},
+		{
+			name: "bad validate tag",
+			implement: func(api *tyr.API) {
+				type badReq struct {
+					Code string `json:"code" validate:"required,maxx=4"`
+				}
+				api.Implement(tyr.Define[badReq, *link]("links.get"), func(ctx context.Context, req badReq) (*link, error) {
+					return nil, nil
+				})
+			},
+			want: `tyr: Implement("links.get"): field Code: validate:"required,maxx=4": unknown rule "maxx"; ` +
+				`add the validate/playground module for more rules, or move the check to Validate()`,
+		},
+		{
+			name:      "nil group option",
+			implement: func(api *tyr.API) { api.Group(nil).Implement(get, getLink) },
+			want:      `tyr: Implement("links.get"): nil option`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := panicValue(func() { tt.implement(tyr.New()) }); got != tt.want {
+				t.Errorf("panicked with %v, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestGroup(t *testing.T) {
 	var applied []string
 	option := func(tag string) tyr.OpOption {
@@ -199,6 +295,7 @@ func TestSeal(t *testing.T) {
 	api.Seal() // sealing again does nothing
 
 	const after = " after Seal: register everything before mounting the API"
+	late := tyr.Define[getLinkReq, *link]("links.late")
 	tests := []struct {
 		name string
 		call func()
@@ -206,6 +303,8 @@ func TestSeal(t *testing.T) {
 	}{
 		{"Handle", func() { api.Handle("links.late", getLink) }, `tyr: Handle("links.late")` + after},
 		{"Group.Handle", func() { api.Group().Handle("links.late", getLink) }, `tyr: Handle("links.late")` + after},
+		{"Implement", func() { api.Implement(late, getLink) }, `tyr: Implement("links.late")` + after},
+		{"Group.Implement", func() { api.Group().Implement(late, getLink) }, `tyr: Implement("links.late")` + after},
 		{"MapError", func() { api.MapError(func(err error) error { return err }) }, "tyr: MapError" + after},
 		{"Use", func() { api.Use(passThrough) }, "tyr: Use" + after},
 	}
