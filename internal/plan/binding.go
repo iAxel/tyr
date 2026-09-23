@@ -77,9 +77,10 @@ type Problem struct {
 // integer or a float type, or implement encoding.TextUnmarshaler, like
 // time.Time does, or be a pointer to one of those, which gets a value only
 // when there is one; query fields may also be slices of those types. A
-// time.Time is an RFC 3339 time in the path and the query, and in a header
-// an HTTP date, as RFC 9110 has them, or else an RFC 3339 time, for headers
-// of one's own.
+// number is written as in JSON: in decimal, without NaN, infinities, a plus
+// sign, leading zeros or underscores. A time.Time is an RFC 3339 time in
+// the path and the query, and in a header an HTTP date, as RFC 9110 has
+// them, or else an RFC 3339 time, for headers of one's own.
 //
 // A bound field must be a member of t's JSON object, as encoding/json/v2
 // sees it, so that a client can set it in JSON too: a field of t or of a
@@ -350,6 +351,9 @@ func scalar(t reflect.Type, src Source) func(v reflect.Value, s string) string {
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		bits := t.Bits()
 		return func(v reflect.Value, s string) string {
+			if !isNumber(s) {
+				return Describe(t)
+			}
 			x, err := strconv.ParseInt(s, 10, bits)
 			if errors.Is(err, strconv.ErrRange) {
 				return fmt.Sprintf("must be an integer from %d to %d", int64(-1)<<(bits-1), int64(1)<<(bits-1)-1)
@@ -362,6 +366,9 @@ func scalar(t reflect.Type, src Source) func(v reflect.Value, s string) string {
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
 		bits := t.Bits()
 		return func(v reflect.Value, s string) string {
+			if !isNumber(s) {
+				return Describe(t)
+			}
 			x, err := strconv.ParseUint(s, 10, bits)
 			if errors.Is(err, strconv.ErrRange) {
 				return fmt.Sprintf("must be an integer from 0 to %d", uint64(1)<<bits-1)
@@ -374,6 +381,9 @@ func scalar(t reflect.Type, src Source) func(v reflect.Value, s string) string {
 	case reflect.Float32, reflect.Float64:
 		bits := t.Bits()
 		return func(v reflect.Value, s string) string {
+			if !isNumber(s) {
+				return Describe(t)
+			}
 			x, err := strconv.ParseFloat(s, bits)
 			if err != nil {
 				return Describe(t)
@@ -383,4 +393,48 @@ func scalar(t reflect.Type, src Source) func(v reflect.Value, s string) string {
 		}
 	}
 	return nil
+}
+
+// isNumber reports whether s is a number as JSON writes one, so that a
+// value means the same in the path, the query or a header as in a body:
+// -?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?. strconv parses more, such
+// as NaN, Inf, 0x10, 1_000 and +1.
+func isNumber(s string) bool {
+	digits := func(i int) int { // the end of the digits at s[i:]
+		for i < len(s) && '0' <= s[i] && s[i] <= '9' {
+			i++
+		}
+		return i
+	}
+	i := 0
+	if i < len(s) && s[i] == '-' {
+		i++
+	}
+	switch {
+	case i < len(s) && s[i] == '0':
+		i++
+	case i < len(s) && '1' <= s[i] && s[i] <= '9':
+		i = digits(i)
+	default:
+		return false
+	}
+	if i < len(s) && s[i] == '.' {
+		j := digits(i + 1)
+		if j == i+1 {
+			return false // no digits after the point
+		}
+		i = j
+	}
+	if i < len(s) && (s[i] == 'e' || s[i] == 'E') {
+		i++
+		if i < len(s) && (s[i] == '+' || s[i] == '-') {
+			i++
+		}
+		j := digits(i)
+		if j == i {
+			return false // no digits in the exponent
+		}
+		i = j
+	}
+	return i == len(s)
 }

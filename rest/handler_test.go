@@ -171,6 +171,13 @@ func TestBadRequests(t *testing.T) {
 		}) (string, error) {
 			return "ok", nil
 		}, rest.Route("POST /pages/{page}"))
+		api.Handle("things.price", func(ctx context.Context, req struct {
+			Price float64 `json:"price" query:"price"`
+			Count int     `json:"count" query:"count"`
+			Rate  float32 `json:"rate" header:"X-Rate"`
+		}) (string, error) {
+			return "ok", nil
+		}, rest.Route("POST /prices"))
 	})
 	tests := []struct {
 		name   string
@@ -192,6 +199,11 @@ func TestBadRequests(t *testing.T) {
 			name:   "invalid UTF-8",
 			target: "/owners/%FF/things?tag=%FE",
 			header: []string{"X-Priority", "\xff"},
+		},
+		{
+			name:   "numbers outside JSON",
+			target: "/prices?price=NaN&count=%2B5",
+			header: []string{"X-Rate", "0x1p-2"},
 		},
 		{name: "broken JSON", target: "/things", body: `{"code": "go",}`},
 		{name: "value of a wrong type", target: "/things", body: `{"items": [{"count": "many"}]}`},

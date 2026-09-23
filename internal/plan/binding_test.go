@@ -317,6 +317,36 @@ func TestBind(t *testing.T) {
 		}
 	})
 
+	t.Run("numbers that JSON doesn't have", func(t *testing.T) {
+		for _, s := range []string{
+			"NaN", "nan", "Inf", "-Inf", "infinity", "0x10", "0x1p-2", "0b1", "0o7", "1_000",
+			"+1", "01", "-01", ".5", "1.", "1.e3", "1e", "1e+", "-", "", " 1", "1 ",
+		} {
+			_, problems := bind(map[string][]string{"query:int": {s}, "query:uint8": {s}, "query:float": {s}})
+			want := []string{"Int: must be an integer", "Uint8: must be a non-negative integer", "Float: must be a number"}
+			if !slices.Equal(problems, want) {
+				t.Errorf("Bind(%q) problems = %q, want %q", s, problems, want)
+			}
+		}
+		// A number of JSON that isn't an integer is no integer here either,
+		// and one out of the range of a float is no float.
+		for _, s := range []string{"1.5", "1e3"} {
+			want := []string{"Int: must be an integer", "Uint8: must be a non-negative integer"}
+			if _, problems := bind(map[string][]string{"query:int": {s}, "query:uint8": {s}}); !slices.Equal(problems, want) {
+				t.Errorf("Bind(%q) problems = %q, want %q", s, problems, want)
+			}
+		}
+		if _, problems := bind(map[string][]string{"query:uint8": {"-1"}, "query:float": {"1e400"}}); !slices.Equal(problems, []string{
+			"Uint8: must be a non-negative integer", "Float: must be a number",
+		}) {
+			t.Errorf("Bind(-1, 1e400) problems = %q", problems)
+		}
+		got, problems := bind(map[string][]string{"query:int": {"-0"}, "query:uint8": {"0"}, "query:float": {"-1.25E+2"}})
+		if problems != nil || got.Int != 0 || got.Uint8 != 0 || got.Float != -125 {
+			t.Errorf("Bind() = Int %d, Uint8 %d, Float %v, %q; want 0, 0, -125 and no problems", got.Int, got.Uint8, got.Float, problems)
+		}
+	})
+
 	t.Run("unsigned range", func(t *testing.T) {
 		if _, problems := bind(map[string][]string{"query:uint8": {"256"}}); !slices.Equal(problems, []string{"Uint8: must be an integer from 0 to 255"}) {
 			t.Errorf("Bind() problems = %q", problems)

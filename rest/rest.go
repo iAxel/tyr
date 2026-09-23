@@ -22,12 +22,14 @@
 // Such fields may be strings, bools, integers and floats, or implement
 // encoding.TextUnmarshaler, or be pointers to those, which get a value only
 // when there is one; query fields may also be slices of those. Values must
-// be valid UTF-8, as JSON strings are. A time.Time is an RFC 3339 time in
-// the path and the query, and in a header an HTTP date, as RFC 9110 has
-// them, or else an RFC 3339 time, for headers of one's own. A value that
-// doesn't fit fails the call with [tyr.KindInvalidArgument] and a
-// [tyr.Violation]: its pointer is the JSON name of the field, and its
-// detail names the source, e.g. query parameter "tag": must be an integer.
+// be valid UTF-8, as JSON strings are, and numbers are written as in JSON:
+// in decimal, without NaN, infinities, a plus sign, leading zeros or
+// underscores. A time.Time is an RFC 3339 time in the path and the query,
+// and in a header an HTTP date, as RFC 9110 has them, or else an RFC 3339
+// time, for headers of one's own. A value that doesn't fit fails the call
+// with [tyr.KindInvalidArgument] and a [tyr.Violation]: its pointer is the
+// JSON name of the field, and its detail names the source, e.g. query
+// parameter "tag": must be an integer.
 //
 // # Responses
 //

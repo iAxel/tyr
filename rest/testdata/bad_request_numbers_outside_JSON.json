@@ -1,0 +1,1 @@
+{"type":"about:blank","title":"Bad Request","status":400,"detail":"validation failed","kind":"invalid_argument","errors":[{"pointer":"/price","detail":"query parameter \"price\": must be a number"},{"pointer":"/count","detail":"query parameter \"count\": must be an integer"},{"pointer":"/rate","detail":"header \"X-Rate\": must be a number"}]}
