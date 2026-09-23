@@ -156,6 +156,27 @@ func TestNewBindingErrors(t *testing.T) {
 			"field A has an empty query tag",
 		},
 		{
+			"option in a query tag",
+			reflect.TypeFor[struct {
+				Tag string `query:"tag,omitempty"`
+			}](),
+			`field Tag has query:"tag,omitempty", which isn't a query parameter name: it has a comma or a space`,
+		},
+		{
+			"space in a query tag",
+			reflect.TypeFor[struct {
+				Q string `query:" q"`
+			}](),
+			`field Q has query:" q", which isn't a query parameter name: it has a comma or a space`,
+		},
+		{
+			"header tag that isn't a header name",
+			reflect.TypeFor[struct {
+				Token string `header:"X Token"`
+			}](),
+			`field Token has header:"X Token", which isn't a header name`,
+		},
+		{
 			"repeated name",
 			reflect.TypeFor[struct {
 				A string `query:"x"`

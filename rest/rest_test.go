@@ -68,6 +68,28 @@ func TestMountPanics(t *testing.T) {
 			want: `rest: operation "links.list": field Tags has query:"tags", but its type map[string]int can't be bound`,
 		},
 		{
+			name: "option in a query tag",
+			register: func(api *tyr.API) {
+				api.Handle("links.list", func(ctx context.Context, req struct {
+					Tag string `json:"tag" query:"tag,omitempty"`
+				}) (string, error) {
+					return "", nil
+				}, rest.Route("GET /links"))
+			},
+			want: `rest: operation "links.list": field Tag has query:"tag,omitempty", which isn't a query parameter name: it has a comma or a space`,
+		},
+		{
+			name: "header tag that isn't a header name",
+			register: func(api *tyr.API) {
+				api.Handle("links.list", func(ctx context.Context, req struct {
+					Token string `json:"token" header:"X Token"`
+				}) (string, error) {
+					return "", nil
+				}, rest.Route("GET /links"))
+			},
+			want: `rest: operation "links.list": field Token has header:"X Token", which isn't a header name`,
+		},
+		{
 			name: "conflict",
 			register: func(api *tyr.API) {
 				api.Handle("links.get", getLink, rest.Route("GET /links/{code}"))

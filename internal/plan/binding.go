@@ -11,7 +11,9 @@ import (
 	"reflect"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -87,8 +89,9 @@ type Problem struct {
 // struct embedded in it that no other field hides.
 //
 // NewBinding fails on a field of another type, on a tag that names nothing
-// or repeats a name, on a field with more than one tag, and on a tag on a
-// field that isn't a member of the JSON object.
+// or repeats a name, on a query tag with a comma or a space, on a header
+// tag that isn't a header name, on a field with more than one tag, and on a
+// tag on a field that isn't a member of the JSON object.
 func NewBinding(t reflect.Type) (*Binding, error) {
 	b := &Binding{}
 	var ms []member // of t's JSON object, found for the first field to need them
@@ -114,6 +117,10 @@ func NewBinding(t reflect.Type) (*Binding, error) {
 			return nil, fmt.Errorf("field %s has %s, but only fields of %v and of structs embedded in it can be bound", tf.name, tag, t)
 		case name == "":
 			return nil, fmt.Errorf("field %s has an empty %s tag", tf.name, src.Tag())
+		case src == Query && strings.ContainsFunc(name, func(r rune) bool { return r == ',' || unicode.IsSpace(r) }):
+			return nil, fmt.Errorf("field %s has %s, which isn't a query parameter name: it has a comma or a space", tf.name, tag)
+		case src == Header && !isToken(name):
+			return nil, fmt.Errorf("field %s has %s, which isn't a header name", tf.name, tag)
 		}
 		if !found {
 			var err error

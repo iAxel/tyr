@@ -179,7 +179,8 @@ func Challenge(challenge string) MountOption {
 //
 // Mount panics if a pattern has no method, ServeMux rejects a pattern or
 // finds that it conflicts with another, a wildcard has no path field or a
-// path field has no wildcard, a bound field can't be bound, a field of a
+// path field has no wildcard, a bound field can't be bound, a query tag has
+// a comma or a space or a header tag isn't a header name, a field of a
 // result can't set its header, or [Status] sets a redirect for a result
 // without a Location field or 204 or 205 for a result with JSON members.
 // It also panics if mux, api or an option is nil.
